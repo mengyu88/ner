@@ -28,6 +28,7 @@ import sys
 import os
 import re
 import math
+from argparse import ArgumentParser
 
 class Token(object):
     def __init__(self, text, orig_text, start, end, after, before, postag, orig_postag):
@@ -419,10 +420,17 @@ def filter_annotations(anns, remove_disc=True, remove_over=False, use_five_types
         result.append(ann)
     return result
 
-def main():
+def main(xml_path=None, output_dir=None):
     folder = os.path.dirname(os.path.abspath(__file__))
-    xml_path = os.path.join(folder, 'data', 'GENIAcorpus3.02.merged.fixed.xml')
-    output_dir = os.path.join(folder, 'outputs', 'genia')
+    if xml_path is None:
+        xml_path = os.path.join(folder, 'data', 'GENIAcorpus3.02.merged.fixed.xml')
+    if output_dir is None:
+        output_dir = os.path.join(folder, 'outputs', 'genia')
+    if not os.path.exists(xml_path):
+        raise FileNotFoundError(
+            f'GENIA XML not found: {xml_path}. '
+            f'Please place the file there or pass --input <path>.'
+        )
     os.makedirs(output_dir, exist_ok=True)
     with open(xml_path, 'r', encoding='utf8') as infile:
         soup = BS(infile.read(), 'lxml')
@@ -485,4 +493,16 @@ def main():
                 f.write(json.dumps(v) + '\n')
 
 if __name__ == '__main__':
-    main()
+    parser = ArgumentParser()
+    parser.add_argument(
+        '-i', '--input',
+        default=None,
+        help='Path to GENIAcorpus3.02.merged.fixed.xml'
+    )
+    parser.add_argument(
+        '-o', '--output',
+        default=None,
+        help='Directory to write train/dev/test jsonlines'
+    )
+    args = parser.parse_args()
+    main(xml_path=args.input, output_dir=args.output)

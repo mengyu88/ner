@@ -57,12 +57,108 @@ class MaskConv2d(nn.Module):
         return self.conv2d_3(x_1)
 
 
+def _resize_mask(mask, x):
+    if mask.size(-1) == x.size(-1) and mask.size(-2) == x.size(-2):
+        return mask
+    return F.interpolate(mask.float(), size=x.shape[-2:], mode='nearest').bool()
+
+
+class _BFMConvBlock(nn.Module):
+    def __init__(self, channels, stride=1):
+        super(_BFMConvBlock, self).__init__()
+        self.conv = nn.Conv2d(
+            channels,
+            channels,
+            kernel_size=3,
+            padding=1,
+            stride=stride,
+            bias=False,
+        )
+        self.norm = LayerNorm((1, channels, 1, 1), dim_index=1)
+        self.act = nn.GELU()
+
+    def forward(self, x, mask):
+        mask = _resize_mask(mask, x)
+        y = x.masked_fill(mask, 0)
+        y = self.conv(y)
+        y = self.norm(y)
+        y = self.act(y)
+        return y
+
+
+class PyramidBFM(nn.Module):
+    """
+    BFM replacement used in Phase-A:
+    keep SDM untouched, replace only the filtration branch.
+    """
+
+    def __init__(self, channels):
+        super(PyramidBFM, self).__init__()
+        self.enc0 = _BFMConvBlock(channels, stride=1)
+        self.enc1 = _BFMConvBlock(channels, stride=2)
+        self.enc2 = _BFMConvBlock(channels, stride=2)
+        self.dec1 = _BFMConvBlock(channels, stride=1)
+        self.dec0 = _BFMConvBlock(channels, stride=1)
+        self.out = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
+
+    def forward(self, x, mask):
+        e0 = self.enc0(x, mask)
+        e1 = self.enc1(e0, _resize_mask(mask, e0))
+        e2 = self.enc2(e1, _resize_mask(mask, e1))
+
+        u1 = F.interpolate(e2, size=e1.shape[-2:], mode='nearest') + e1
+        u1 = self.dec1(u1, _resize_mask(mask, u1))
+
+        u0 = F.interpolate(u1, size=e0.shape[-2:], mode='nearest') + e0
+        u0 = self.dec0(u0, _resize_mask(mask, u0))
+
+        out = self.out(u0.masked_fill(mask, 0))
+        return out.masked_fill(mask, 0)
+
+
+class PyramidGatedBFM(nn.Module):
+    """
+    A detail-preserving BFM:
+    one down-sampling stage + gated fusion with high-resolution features.
+    """
+
+    def __init__(self, channels):
+        super(PyramidGatedBFM, self).__init__()
+        self.enc0 = _BFMConvBlock(channels, stride=1)
+        self.enc1 = _BFMConvBlock(channels, stride=2)
+        self.bridge = _BFMConvBlock(channels, stride=1)
+        self.dec0 = _BFMConvBlock(channels, stride=1)
+        self.gate = nn.Conv2d(channels * 2, channels, kernel_size=1, bias=True)
+        self.out = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
+
+    def forward(self, x, mask):
+        m0 = _resize_mask(mask, x)
+        e0 = self.enc0(x, m0)
+        e1 = self.enc1(e0, _resize_mask(m0, e0))
+        b = self.bridge(e1, _resize_mask(m0, e1))
+
+        u0 = F.interpolate(b, size=e0.shape[-2:], mode='nearest') + e0
+        u0 = self.dec0(u0, _resize_mask(m0, u0))
+
+        gate_in = torch.cat([u0, e0], dim=1).masked_fill(m0, 0)
+        gate = torch.sigmoid(self.gate(gate_in))
+        fused = gate * u0 + (1.0 - gate) * e0
+        out = self.out(fused.masked_fill(m0, 0))
+        return out.masked_fill(m0, 0)
+
+
 class MaskCNN_1(nn.Module):
-    def __init__(self, input_channels, output_channels, kernel_size=3, depth=3,theta=1):
+    def __init__(self, input_channels, output_channels, kernel_size=3, depth=3, theta=1, bfm_type='legacy'):
         super(MaskCNN_1, self).__init__()
         
         self.theta = theta
         self.inchannels = input_channels
+        self.bfm_type = bfm_type
+        if self.bfm_type not in ('legacy', 'pyramid', 'pyramid_gated'):
+            raise ValueError(
+                "bfm_type must be one of ['legacy', 'pyramid', 'pyramid_gated'], "
+                f"got {self.bfm_type}"
+            )
         layers1 = []
         layers2 = []
         layers3 = []
@@ -95,14 +191,19 @@ class MaskCNN_1(nn.Module):
             nn.GELU(),
         ])
         
-        layers4.extend([
-            MaskConv2d(input_channels, input_channels, kernel_size=3, padding=1, flag=4,stride=2),
-            LayerNorm((1, input_channels, 1, 1), dim_index=1),
-            nn.GELU(),
-            MaskConv2d(input_channels, input_channels, kernel_size=3, padding=1, flag=4,stride=2),
-            LayerNorm((1, input_channels, 1, 1), dim_index=1),
-            nn.GELU(),
-        ])
+        if self.bfm_type == 'legacy':
+            layers4.extend([
+                MaskConv2d(input_channels, input_channels, kernel_size=3, padding=1, flag=4, stride=2),
+                LayerNorm((1, input_channels, 1, 1), dim_index=1),
+                nn.GELU(),
+                MaskConv2d(input_channels, input_channels, kernel_size=3, padding=1, flag=4, stride=2),
+                LayerNorm((1, input_channels, 1, 1), dim_index=1),
+                nn.GELU(),
+            ])
+        elif self.bfm_type == 'pyramid':
+            self.bfm = PyramidBFM(input_channels)
+        else:
+            self.bfm = PyramidGatedBFM(input_channels)
         self.cnns1 = nn.ModuleList(layers1)
         self.cnns2 = nn.ModuleList(layers2)
         self.cnns3 = nn.ModuleList(layers3)
@@ -126,8 +227,6 @@ class MaskCNN_1(nn.Module):
         t_hor = []
         t_ver = []
         t_real = []
-        t_se = [x_4]
-
         cnn_type =[0,3]
         
         if 0 in cnn_type:
@@ -195,37 +294,43 @@ class MaskCNN_1(nn.Module):
                         x_3 = x_3 + _x3
                     t_real.append(x_3)
 
-        if 3 in cnn_type:
-            for layer in self.cnns4:
-                if isinstance(layer, LayerNorm):
-                    x_4 = layer(x_4)
-                elif isinstance(layer, MaskConv2d):
-                    x_4 = layer(x_4, mask,True)
+        if self.bfm_type == 'legacy':
+            t_se = [x_4]
+            if 3 in cnn_type:
+                for layer in self.cnns4:
+                    if isinstance(layer, LayerNorm):
+                        x_4 = layer(x_4)
+                    elif isinstance(layer, MaskConv2d):
+                        x_4 = layer(x_4, mask, True)
+                    else:
+                        x_4 = layer(x_4)
+                        t_se.append(x_4)
+
+            for i in [1]:
+                i_up = F.upsample(t_se[i], size=(t_se[i-1].shape[2], t_se[i-1].shape[3]), mode='nearest')
+                if i !=1:
+                    t_se[i-1] = t_se[i-1] + i_up
                 else:
-                    x_4 = layer(x_4)
-                    t_se.append(x_4)
+                    t_se[i-1] = self.t4_trans(i_up)
+            bfm_feat = t_se[0]
+        else:
+            bfm_feat = self.bfm(x_4, mask)
 
-        for i in [1]:
-            i_up = F.upsample(t_se[i],size=(t_se[i-1].shape[2],t_se[i-1].shape[3]),mode='nearest')
-            if i !=1:
-                t_se[i-1] = t_se[i-1] + i_up
-            else:
-                t_se[i-1] = self.t4_trans(i_up)
-            
-        t_list = [t_ver,t_hor,t_real,t_se]
-        # atts_dc1 = torch.cat([t_list[cnn_type[0]][2],t_list[cnn_type[1]][2]],dim=1)
-        # atts_dc1 = self.lastLinear_dc(atts_dc1.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-
-        # linear_atts_dc1 = torch.cat([atts_dc1,t_se[0]],dim=1)
-        linear_atts_dc1 = torch.cat([t_list[cnn_type[0]][2],t_se[0]],dim=1).masked_fill(mask, 0)
+        linear_atts_dc1 = torch.cat([t_ver[2], bfm_feat], dim=1).masked_fill(mask, 0)
         return linear_atts_dc1
 
 class MaskCNN_2(nn.Module):
-    def __init__(self, input_channels, output_channels, kernel_size=3, depth=3,theta=1):
+    def __init__(self, input_channels, output_channels, kernel_size=3, depth=3, theta=1, bfm_type='legacy'):
         super(MaskCNN_2, self).__init__()
         
         self.theta = theta
         self.inchannels = input_channels
+        self.bfm_type = bfm_type
+        if self.bfm_type not in ('legacy', 'pyramid', 'pyramid_gated'):
+            raise ValueError(
+                "bfm_type must be one of ['legacy', 'pyramid', 'pyramid_gated'], "
+                f"got {self.bfm_type}"
+            )
         layers1 = []
         layers2 = []
         layers3 = []
@@ -258,14 +363,19 @@ class MaskCNN_2(nn.Module):
             nn.GELU(),
         ])
         
-        layers4.extend([
-            MaskConv2d(input_channels, input_channels, kernel_size=3, padding=1, flag=4,stride=2),
-            LayerNorm((1, input_channels, 1, 1), dim_index=1),
-            nn.GELU(),
-            MaskConv2d(input_channels, input_channels, kernel_size=3, padding=1, flag=4,stride=2),
-            LayerNorm((1, input_channels, 1, 1), dim_index=1),
-            nn.GELU(),
-        ])
+        if self.bfm_type == 'legacy':
+            layers4.extend([
+                MaskConv2d(input_channels, input_channels, kernel_size=3, padding=1, flag=4, stride=2),
+                LayerNorm((1, input_channels, 1, 1), dim_index=1),
+                nn.GELU(),
+                MaskConv2d(input_channels, input_channels, kernel_size=3, padding=1, flag=4, stride=2),
+                LayerNorm((1, input_channels, 1, 1), dim_index=1),
+                nn.GELU(),
+            ])
+        elif self.bfm_type == 'pyramid':
+            self.bfm = PyramidBFM(input_channels)
+        else:
+            self.bfm = PyramidGatedBFM(input_channels)
         self.cnns1 = nn.ModuleList(layers1)
         self.cnns2 = nn.ModuleList(layers2)
         self.cnns3 = nn.ModuleList(layers3)
@@ -290,8 +400,6 @@ class MaskCNN_2(nn.Module):
         t_hor = []
         t_ver = []
         t_real = []
-        t_se = [x_4]
-
         cnn_type =[0,1,3]
         
         if 0 in cnn_type:
@@ -359,27 +467,89 @@ class MaskCNN_2(nn.Module):
                         x_3 = x_3 + _x3
                     t_real.append(x_3)
 
-        if 3 in cnn_type:
-            for layer in self.cnns4:
-                if isinstance(layer, LayerNorm):
-                    x_4 = layer(x_4)
-                elif isinstance(layer, MaskConv2d):
-                    x_4 = layer(x_4, mask,True)
-                else:
-                    x_4 = layer(x_4)
-                    t_se.append(x_4)
+        if self.bfm_type == 'legacy':
+            t_se = [x_4]
+            if 3 in cnn_type:
+                for layer in self.cnns4:
+                    if isinstance(layer, LayerNorm):
+                        x_4 = layer(x_4)
+                    elif isinstance(layer, MaskConv2d):
+                        x_4 = layer(x_4, mask,True)
+                    else:
+                        x_4 = layer(x_4)
+                        t_se.append(x_4)
 
-        for i in [1]:
-            i_up = F.upsample(t_se[i],size=(t_se[i-1].shape[2],t_se[i-1].shape[3]),mode='nearest')
-            if i !=1:
-                t_se[i-1] = t_se[i-1] + i_up
-            else:
-                t_se[i-1] = self.t4_trans(i_up)
-            
-        t_list = [t_ver,t_hor,t_real,t_se]
-        atts_dc1 = torch.cat([t_list[cnn_type[0]][2],t_list[cnn_type[1]][2]],dim=1)
+            for i in [1]:
+                i_up = F.upsample(t_se[i],size=(t_se[i-1].shape[2],t_se[i-1].shape[3]),mode='nearest')
+                if i !=1:
+                    t_se[i-1] = t_se[i-1] + i_up
+                else:
+                    t_se[i-1] = self.t4_trans(i_up)
+            bfm_feat = t_se[0]
+        else:
+            bfm_feat = self.bfm(x_4, mask)
+
+        t_list = [t_ver, t_hor, t_real]
+        atts_dc1 = torch.cat([t_list[cnn_type[0]][2], t_list[cnn_type[1]][2]], dim=1)
         atts_dc1 = self.lastLinear_dc(atts_dc1.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
 
-        # linear_atts_dc1 = torch.cat([atts_dc1,t_se[0]],dim=1)
-        linear_atts_dc1 = torch.cat([atts_dc1,t_se[0]],dim=1).masked_fill(mask, 0)
+        linear_atts_dc1 = torch.cat([atts_dc1, bfm_feat], dim=1).masked_fill(mask, 0)
         return linear_atts_dc1
+
+
+class _DilatedResidualBlock(nn.Module):
+    def __init__(self, channels, dilation=1, dropout=0.0):
+        super(_DilatedResidualBlock, self).__init__()
+        self.norm = LayerNorm((1, channels, 1, 1), dim_index=1)
+        self.conv = nn.Conv2d(
+            channels,
+            channels,
+            kernel_size=3,
+            padding=dilation,
+            dilation=dilation,
+            bias=False,
+        )
+        self.act = nn.GELU()
+        self.drop = nn.Dropout2d(dropout) if dropout > 0 else nn.Identity()
+
+    def forward(self, x, mask):
+        residual = x
+        y = self.norm(x)
+        y = y.masked_fill(mask, 0)
+        y = self.conv(y)
+        y = self.act(y)
+        y = self.drop(y)
+        y = (y + residual).masked_fill(mask, 0)
+        return y
+
+
+class DilatedResRefiner(nn.Module):
+    """
+    A lightweight pair-refiner with two residual dilated branches.
+    Returns 2 * channels to stay compatible with the original down_fc input.
+    """
+
+    def __init__(self, channels, depth=2, dropout=0.0):
+        super(DilatedResRefiner, self).__init__()
+        depth = max(int(depth), 1)
+        pattern1 = [1, 2, 3]
+        pattern2 = [2, 1, 2]
+
+        dilations1 = [pattern1[i % len(pattern1)] for i in range(depth)]
+        dilations2 = [pattern2[i % len(pattern2)] for i in range(depth)]
+
+        self.branch1 = nn.ModuleList(
+            [_DilatedResidualBlock(channels, d, dropout=dropout) for d in dilations1]
+        )
+        self.branch2 = nn.ModuleList(
+            [_DilatedResidualBlock(channels, d, dropout=dropout) for d in dilations2]
+        )
+
+    def forward(self, x, mask, train):
+        b1 = x.masked_fill(mask, 0)
+        b2 = b1
+        for block in self.branch1:
+            b1 = block(b1, mask)
+        for block in self.branch2:
+            b2 = block(b2, mask)
+        return torch.cat([b1, b2], dim=1).masked_fill(mask, 0)

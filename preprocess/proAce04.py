@@ -736,4 +736,5 @@ if __name__ == '__main__':
     convert_to_oneie(json_path, oneie_path)
 
     # Split the data
-    split_data(oneie_path, args.output, 'splits/ace2004')
+    split_dir = args.split or os.path.join(os.path.dirname(os.path.abspath(__file__)), 'splits', 'ace2004')
+    split_data(oneie_path, args.output, split_dir)

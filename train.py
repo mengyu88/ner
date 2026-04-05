@@ -26,7 +26,7 @@ import fitlog
 # fitlog.debug()
 
 from model.model import CNNNer
-from model.metrics_length import NERMetric
+from model.metrics import NERMetric
 from data.ner_pipe import SpanNerPipe
 from data.padder import Torch3DMatrixPadder
 
@@ -50,18 +50,68 @@ parser.add_argument('--accumulation_steps', default=1, type=int)
 parser.add_argument('--separateness_rate', default=5, type=int)
 parser.add_argument('--theta', default=1, type=float)
 parser.add_argument('--loss_theta', default=1, type=float)
+parser.add_argument('--size_feature_type', default='embed', choices=['embed', 'bias'], type=str)
+parser.add_argument('--word_pooling', default='max', choices=['max', 'mean', 'mix'], type=str)
+parser.add_argument('--pool_gate_type', default='scalar', choices=['scalar', 'channel'], type=str)
+parser.add_argument('--refiner_type', default='maskcnn', choices=['maskcnn', 'dilated'], type=str)
+parser.add_argument('--pair_scorer', default='biaffine', choices=['biaffine', 'rope_gp', 'lowrank'], type=str)
+parser.add_argument('--gp_hidden', default=8, type=int)
+parser.add_argument('--lowrank_dim', default=64, type=int)
+parser.add_argument('--mlp_type', default='mlp', choices=['mlp', 'geglu'], type=str)
+parser.add_argument('--fusion_type', default='sum', choices=['sum', 'adaptive'], type=str)
+parser.add_argument('--bfm_type', default='legacy', choices=['legacy', 'pyramid', 'pyramid_gated'], type=str)
+
+
+def default_model_name(dataset_name):
+    if 'genia' in dataset_name:
+        return 'dmis-lab/biobert-v1.1'
+    if dataset_name == 'weibo':
+        return 'bert-base-chinese'
+    if dataset_name == 'conll03':
+        return 'bert-large-cased'
+    if dataset_name in ('ace2004', 'ace2005'):
+        return 'roberta-base'
+    raise RuntimeError(f'Unsupported dataset_name: {dataset_name}')
+
+
+def resolve_model_name(dataset_name, model_name):
+    model_name = model_name or default_model_name(dataset_name)
+    if os.path.isdir(model_name):
+        return model_name
+
+    use_modelscope = os.environ.get('USE_MODELSCOPE', '0') == '1' or model_name.startswith('ms://')
+    if not use_modelscope:
+        return model_name
+
+    model_id = model_name[5:] if model_name.startswith('ms://') else model_name
+    modelscope_candidates = {
+        'roberta-base': ['AI-ModelScope/roberta-base', 'roberta-base'],
+        'bert-large-cased': ['AI-ModelScope/bert-large-cased', 'bert-large-cased'],
+        'bert-base-chinese': ['AI-ModelScope/bert-base-chinese', 'bert-base-chinese'],
+        'dmis-lab/biobert-v1.1': ['dmis-lab/biobert-v1.1', 'AI-ModelScope/biobert-v1.1'],
+    }
+    candidate_ids = modelscope_candidates.get(model_id, [model_id])
+    from modelscope.hub.snapshot_download import snapshot_download
+    cache_dir = os.environ.get('MODELSCOPE_CACHE', None)
+    last_error = None
+    for candidate in candidate_ids:
+        try:
+            model_dir = snapshot_download(candidate, cache_dir=cache_dir)
+            print(f'Loaded model from ModelScope: {candidate} -> {model_dir}')
+            return model_dir
+        except Exception as e:
+            last_error = e
+    raise RuntimeError(
+        f'Failed to download model via ModelScope, candidates={candidate_ids}. '
+        f'You can pass --model_name <local_path>, or use HF mirror via HF_ENDPOINT. '
+        f'Last error: {last_error}'
+    )
+
 
 args = parser.parse_args()
 dataset_name = args.dataset_name
-if args.model_name is None:
-    if 'genia' in args.dataset_name:
-        args.model_name = '/home/caiyuxiang/.cache/huggingface/hub/models--dmis-lab--biobert-v1.1/snapshots/551ca18efd7f052c8dfa0b01c94c2a8e68bc5488'
-    elif args.dataset_name in ('conll03'):
-        args.model_name = 'models--bert-large-cased'
-    elif args.dataset_name in ('ace2004','ace2005'):
-        args.model_name = '/home/caiyuxiang/.cache/huggingface/hub/models--roberta-base/snapshots/bc2764f8af2e92b6eb5679868df33e224075ca68'
-
-model_name = args.model_name
+model_name = resolve_model_name(dataset_name, args.model_name)
+args.model_name = model_name
 n_head = args.n_head
 ######hyper
 non_ptm_lr_ratio = 100
@@ -100,6 +150,8 @@ def get_data(dataset_name, model_name):
         paths = 'preprocess/outputs/ace2005'
     elif dataset_name == 'genia':
         paths = 'preprocess/outputs/genia'
+    elif dataset_name == 'weibo':
+        paths = 'preprocess/outputs/weibo'
     elif dataset_name == 'conll03':
         paths = 'preprocess/outputs/conll03'
     else:
@@ -130,20 +182,26 @@ for name, ds in dl.iter_datasets():
                                                     batch_size=args.batch_size))
 
     if name == 'train':
-        _dl = prepare_torch_dataloader(ds, batch_size=args.batch_size, num_workers=0,
+        _dl = prepare_torch_dataloader(ds, batch_size=args.batch_size, num_workers=2,
                                        batch_sampler=BucketedBatchSampler(ds, 'input_ids',
                                                                           batch_size=args.batch_size,
                                                                           num_batch_per_bucket=30),
                                        pin_memory=True, shuffle=True)
 
     else:
-        _dl = prepare_torch_dataloader(ds, batch_size=args.batch_size, num_workers=0,
+        _dl = prepare_torch_dataloader(ds, batch_size=args.batch_size, num_workers=2,
                                        sampler=SortedSampler(ds, 'input_ids'), pin_memory=True, shuffle=False)
     dls[name] = _dl
 
 model = CNNNer(model_name, num_ner_tag=matrix_segs['ent'], cnn_dim=args.cnn_dim, biaffine_size=args.biaffine_size,
                size_embed_dim=size_embed_dim, logit_drop=args.logit_drop,n_layer=args.n_layer,
-               kernel_size=kernel_size, n_head=n_head, cnn_depth=args.cnn_depth,separateness_rate=args.separateness_rate/100,theta=args.theta)
+               kernel_size=kernel_size, n_head=n_head, cnn_depth=args.cnn_depth,
+               separateness_rate=args.separateness_rate/100, theta=args.theta,
+               loss_theta=args.loss_theta, size_feature_type=args.size_feature_type,
+               word_pooling=args.word_pooling, pool_gate_type=args.pool_gate_type,
+               refiner_type=args.refiner_type, pair_scorer=args.pair_scorer,
+               gp_hidden=args.gp_hidden, lowrank_dim=args.lowrank_dim, mlp_type=args.mlp_type,
+               fusion_type=args.fusion_type, bfm_type=args.bfm_type)
 
 # optimizer
 parameters = []
@@ -204,7 +262,7 @@ trainer = Trainer(model=model,
                   optimizers=optimizer,
                   callbacks=callbacks,
                   overfit_batches=0,
-                  device=0,
+                  device=0 if torch.cuda.is_available() else 'cpu',
                   n_epochs=args.n_epochs,
                   metrics=metrics,
                   monitor='f#f#dev',
