@@ -95,6 +95,43 @@ class GeGLUProjector(nn.Module):
         return value * F.gelu(gate)
 
 
+class ResidualMLPScoreHead(nn.Module):
+    """
+    Linear base scorer + residual MLP branch.
+    Residual scale starts at 0 for stable warm-up.
+    """
+
+    def __init__(self, in_features, out_features, dropout=0.1, hidden_ratio=1.5):
+        super(ResidualMLPScoreHead, self).__init__()
+        hidden_dim = max(int(in_features * hidden_ratio), out_features)
+        self.base = nn.Linear(in_features, out_features)
+        self.norm = nn.LayerNorm(in_features)
+        self.up = nn.Linear(in_features, hidden_dim)
+        self.act = nn.GELU()
+        self.drop = nn.Dropout(dropout)
+        self.down = nn.Linear(hidden_dim, out_features)
+        self.res_scale = nn.Parameter(torch.tensor(0.0))
+
+        torch.nn.init.xavier_normal_(self.base.weight.data)
+        torch.nn.init.xavier_normal_(self.up.weight.data)
+        torch.nn.init.xavier_normal_(self.down.weight.data)
+        if self.base.bias is not None:
+            torch.nn.init.zeros_(self.base.bias.data)
+        if self.up.bias is not None:
+            torch.nn.init.zeros_(self.up.bias.data)
+        if self.down.bias is not None:
+            torch.nn.init.zeros_(self.down.bias.data)
+
+    def forward(self, x):
+        base = self.base(x)
+        y = self.norm(x)
+        y = self.up(y)
+        y = self.act(y)
+        y = self.drop(y)
+        y = self.down(y)
+        return base + torch.tanh(self.res_scale) * y
+
+
 class CNNNer(nn.Module):
     def __init__(self, model_name, num_ner_tag, cnn_dim=200, biaffine_size=200,
                  size_embed_dim=0, logit_drop=0, kernel_size=3, n_head=4, cnn_depth=3,
@@ -103,7 +140,8 @@ class CNNNer(nn.Module):
                  word_pooling='max',pool_gate_type='scalar',refiner_type='maskcnn',
                  pair_scorer='biaffine',gp_hidden=8,lowrank_dim=64,
                  mlp_type='mlp',fusion_type='sum',bfm_type='legacy',
-                 sdm_mask_type='hard_gumbel', sdm_topk=2):
+                 sdm_mask_type='hard_gumbel', sdm_topk=2,
+                 head_type='linear'):
         super(CNNNer, self).__init__()
         self.mdim =(cnn_dim) 
         self.num_ner_tag = num_ner_tag
@@ -133,6 +171,9 @@ class CNNNer(nn.Module):
             raise ValueError(f"sdm_topk must be > 0, got {sdm_topk}")
         self.sdm_mask_type = sdm_mask_type
         self.sdm_topk = sdm_topk
+        if head_type not in ('linear', 'residual_mlp'):
+            raise ValueError(f"head_type must be one of ['linear', 'residual_mlp'], got {head_type}")
+        self.head_type = head_type
         if pair_scorer not in ('biaffine', 'rope_gp', 'lowrank'):
             raise ValueError(f"pair_scorer must be one of ['biaffine', 'rope_gp', 'lowrank'], got {pair_scorer}")
         self.pair_scorer = pair_scorer
@@ -245,8 +286,16 @@ class CNNNer(nn.Module):
                 )
             else:
                 raise ValueError(f"Unsupported n_layer={self.n_layer} for refiner_type=maskcnn")
-        self.down_fc = nn.Linear(cnn_dim*3, num_ner_tag)
-        torch.nn.init.xavier_normal_(self.down_fc.weight.data)
+        if self.head_type == 'residual_mlp':
+            self.score_head = ResidualMLPScoreHead(
+                in_features=cnn_dim * 3,
+                out_features=num_ner_tag,
+                dropout=logit_drop,
+                hidden_ratio=1.5,
+            )
+        else:
+            self.score_head = nn.Linear(cnn_dim * 3, num_ner_tag)
+            torch.nn.init.xavier_normal_(self.score_head.weight.data)
         self.logit_drop = logit_drop
     def forward(self, input_ids, bpe_len, indexes, matrix,raw_words):
 
@@ -315,7 +364,7 @@ class CNNNer(nn.Module):
             u_score1= self.cnn1(u_scores1, pad_mask1,self.training)
 
         u_score = torch.concat([scores, u_score1],dim=1)
-        final_score = self.down_fc(u_score.permute(0, 2, 3, 1))
+        final_score = self.score_head(u_score.permute(0, 2, 3, 1))
         assert final_score.size(-1) == matrix.size(-1)
         if self.training:
             flat_scores = final_score.reshape(-1)

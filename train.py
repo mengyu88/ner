@@ -59,6 +59,7 @@ parser.add_argument('--gp_hidden', default=8, type=int)
 parser.add_argument('--lowrank_dim', default=64, type=int)
 parser.add_argument('--mlp_type', default='mlp', choices=['mlp', 'geglu'], type=str)
 parser.add_argument('--fusion_type', default='sum', choices=['sum', 'adaptive'], type=str)
+parser.add_argument('--head_type', default='linear', choices=['linear', 'residual_mlp'], type=str)
 parser.add_argument('--bfm_type', default='legacy',
                     choices=['legacy', 'pyramid', 'pyramid_gated', 'pyramid_gated_se'], type=str)
 parser.add_argument('--sdm_mask_type', default='hard_gumbel',
@@ -206,7 +207,8 @@ model = CNNNer(model_name, num_ner_tag=matrix_segs['ent'], cnn_dim=args.cnn_dim,
                refiner_type=args.refiner_type, pair_scorer=args.pair_scorer,
                gp_hidden=args.gp_hidden, lowrank_dim=args.lowrank_dim, mlp_type=args.mlp_type,
                fusion_type=args.fusion_type, bfm_type=args.bfm_type,
-               sdm_mask_type=args.sdm_mask_type, sdm_topk=args.sdm_topk)
+               sdm_mask_type=args.sdm_mask_type, sdm_topk=args.sdm_topk,
+               head_type=args.head_type)
 
 # optimizer
 parameters = []
