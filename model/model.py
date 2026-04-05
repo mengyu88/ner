@@ -102,7 +102,8 @@ class CNNNer(nn.Module):
                  size_feature_type='embed',
                  word_pooling='max',pool_gate_type='scalar',refiner_type='maskcnn',
                  pair_scorer='biaffine',gp_hidden=8,lowrank_dim=64,
-                 mlp_type='mlp',fusion_type='sum',bfm_type='legacy'):
+                 mlp_type='mlp',fusion_type='sum',bfm_type='legacy',
+                 sdm_mask_type='hard_gumbel', sdm_topk=2):
         super(CNNNer, self).__init__()
         self.mdim =(cnn_dim) 
         self.num_ner_tag = num_ner_tag
@@ -123,6 +124,15 @@ class CNNNer(nn.Module):
                 f"got {bfm_type}"
             )
         self.bfm_type = bfm_type
+        if sdm_mask_type not in ('hard_gumbel', 'soft_topk', 'softmax'):
+            raise ValueError(
+                "sdm_mask_type must be one of ['hard_gumbel', 'soft_topk', 'softmax'], "
+                f"got {sdm_mask_type}"
+            )
+        if sdm_topk <= 0:
+            raise ValueError(f"sdm_topk must be > 0, got {sdm_topk}")
+        self.sdm_mask_type = sdm_mask_type
+        self.sdm_topk = sdm_topk
         if pair_scorer not in ('biaffine', 'rope_gp', 'lowrank'):
             raise ValueError(f"pair_scorer must be one of ['biaffine', 'rope_gp', 'lowrank'], got {pair_scorer}")
         self.pair_scorer = pair_scorer
@@ -219,6 +229,8 @@ class CNNNer(nn.Module):
                     depth=cnn_depth,
                     theta=theta,
                     bfm_type=bfm_type,
+                    sdm_mask_type=sdm_mask_type,
+                    sdm_topk=sdm_topk,
                 )
             elif self.n_layer == 2:
                 self.cnn1 = MaskCNN_2(
@@ -228,6 +240,8 @@ class CNNNer(nn.Module):
                     depth=cnn_depth,
                     theta=theta,
                     bfm_type=bfm_type,
+                    sdm_mask_type=sdm_mask_type,
+                    sdm_topk=sdm_topk,
                 )
             else:
                 raise ValueError(f"Unsupported n_layer={self.n_layer} for refiner_type=maskcnn")

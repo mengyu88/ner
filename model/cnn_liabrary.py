@@ -10,7 +10,8 @@ from sparsemax import Sparsemax
 
 class Conv2d_selfAdapt(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=3, stride=1,
-                 padding=1, dilation=1, groups=1, bias=False, theta=0):
+                 padding=1, dilation=1, groups=1, bias=False, theta=0,
+                 sdm_mask_type='hard_gumbel', sdm_topk=2):
         super(Conv2d_selfAdapt, self).__init__()
         self.kernel_size = kernel_size
         self.padding = padding
@@ -21,9 +22,13 @@ class Conv2d_selfAdapt(nn.Module):
         # self.filter_conv2d = nn.Conv2d(in_channels, 1, kernel_size=kernel_size, stride=stride, padding="same",
         #                       dilation=dilation, groups=groups, bias=bias)
         self.unfold = nn.Unfold(kernel_size=kernel_size,dilation=dilation,padding=1)
-        self.softArgMax = Soft_argmax(t=self.t)
+        self.softArgMax = Soft_argmax(t=self.t, mask_type=sdm_mask_type, topk=sdm_topk)
         self.layerNorm = LayerNorm((1, 8, 1, 1), dim_index=1)
-        self.diff_conv2d_weight = torch.tensor([[-1., -1.,-1. ],[ -1.,1.,-1. ],[-1.,-1.,-1.]],requires_grad=False)[None, None, :, :].repeat(in_channels, out_channels, 1, 1).cuda(0)
+        base_weight = torch.tensor(
+            [[-1., -1., -1.], [-1., 1., -1.], [-1., -1., -1.]],
+            requires_grad=False,
+        )[None, None, :, :].repeat(in_channels, out_channels, 1, 1)
+        self.register_buffer('diff_conv2d_weight', base_weight)
         self.unfold_mask01_x = None
     def forward(self, x ,init_flag): 
         batch_size,hidden_size, h, w =x.shape
@@ -47,26 +52,49 @@ class Conv2d_selfAdapt(nn.Module):
 
 
 class Soft_argmax(nn.Module):
-    def __init__(self,t) -> None:
+    def __init__(self, t, mask_type='hard_gumbel', topk=2) -> None:
         super(Soft_argmax,self).__init__()
         self.t = t
+        self.mask_type = mask_type
+        self.topk = topk
+
     def forward(self,x):
+        if self.mask_type == 'soft_topk':
+            return soft_topk_mask(x, topk=self.topk, temperature=self.t)
+        if self.mask_type == 'softmax':
+            temperature = max(float(self.t), 1e-6)
+            return F.softmax(x / temperature, dim=1)
         x_gumbel = gumbel_softmax_sample(x,self.t)
-        argmax = torch.zeros_like(x).cuda()
+        argmax = torch.zeros_like(x)
         argmax = argmax.scatter_(1,torch.argmax(x_gumbel,1).unsqueeze(1),1)
         c = argmax - x_gumbel
         c = c.detach()
         output = c + x_gumbel
         return output
-        
-def sample_gumbel(shape, eps=1e-20):
-    U = torch.rand(shape)
-    U = U.cuda()
+
+
+def soft_topk_mask(logits, topk=2, temperature=1.0):
+    temperature = max(float(temperature), 1e-6)
+    scaled = logits / temperature
+    if topk is None or topk <= 0 or topk >= scaled.size(1):
+        return F.softmax(scaled, dim=1)
+    topk_values, topk_indices = torch.topk(scaled, k=topk, dim=1)
+    topk_probs = F.softmax(topk_values, dim=1)
+    output = torch.zeros_like(scaled)
+    output.scatter_(1, topk_indices, topk_probs)
+    return output
+
+
+def sample_gumbel(shape, device, dtype, eps=1e-20):
+    # Keep CPU-side RNG behavior close to the original implementation
+    # (sample on CPU then move), so hard_gumbel remains comparable.
+    U = torch.rand(shape, dtype=dtype).to(device)
     return -torch.log(-torch.log(U + eps) + eps)
 
 
 def gumbel_softmax_sample(logits, temperature=1):
-    y = logits + sample_gumbel(logits.size())
+    temperature = max(float(temperature), 1e-6)
+    y = logits + sample_gumbel(logits.size(), device=logits.device, dtype=logits.dtype)
     return F.softmax(y / temperature, dim=1)
 
     

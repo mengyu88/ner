@@ -30,13 +30,15 @@ class LayerNorm(nn.Module):
 
 
 class MaskConv2d(nn.Module):
-    def __init__(self, in_ch, out_ch, kernel_size=3, padding=1, groups=1, flag=1,dilation=1,stride=1,theta=1):
+    def __init__(self, in_ch, out_ch, kernel_size=3, padding=1, groups=1, flag=1,
+                 dilation=1, stride=1, theta=1, sdm_mask_type='hard_gumbel', sdm_topk=2):
         super(MaskConv2d, self).__init__()
         self.in_ch = in_ch
         self.flag = flag
         if flag == 1 or flag == 2:
             self.conv2d_3 = Conv2d_selfAdapt(in_ch, out_ch, kernel_size=kernel_size, padding=padding,
-                                    bias=False, groups=groups,dilation=dilation,stride=stride,theta=theta)
+                                    bias=False, groups=groups, dilation=dilation, stride=stride, theta=theta,
+                                    sdm_mask_type=sdm_mask_type, sdm_topk=sdm_topk)
         elif flag == 3 or flag == 4:
             self.conv2d_3 = nn.Conv2d(in_ch, out_ch, kernel_size=kernel_size, padding=padding,
                                   bias=False, groups=groups,dilation=dilation,stride=stride)
@@ -148,23 +150,36 @@ class PyramidGatedBFM(nn.Module):
 
 
 class MaskCNN_1(nn.Module):
-    def __init__(self, input_channels, output_channels, kernel_size=3, depth=3, theta=1, bfm_type='legacy'):
+    def __init__(self, input_channels, output_channels, kernel_size=3, depth=3, theta=1,
+                 bfm_type='legacy', sdm_mask_type='hard_gumbel', sdm_topk=2):
         super(MaskCNN_1, self).__init__()
         
         self.theta = theta
         self.inchannels = input_channels
         self.bfm_type = bfm_type
+        self.sdm_mask_type = sdm_mask_type
+        self.sdm_topk = sdm_topk
         if self.bfm_type not in ('legacy', 'pyramid', 'pyramid_gated'):
             raise ValueError(
                 "bfm_type must be one of ['legacy', 'pyramid', 'pyramid_gated'], "
                 f"got {self.bfm_type}"
             )
+        if self.sdm_mask_type not in ('hard_gumbel', 'soft_topk', 'softmax'):
+            raise ValueError(
+                "sdm_mask_type must be one of ['hard_gumbel', 'soft_topk', 'softmax'], "
+                f"got {self.sdm_mask_type}"
+            )
+        if self.sdm_topk <= 0:
+            raise ValueError(f"sdm_topk must be > 0, got {self.sdm_topk}")
         layers1 = []
         layers2 = []
         layers3 = []
         layers4 = []
 
-        self.c1 = MaskConv2d(input_channels, input_channels, kernel_size=kernel_size, padding='same', flag=1,theta=self.theta)
+        self.c1 = MaskConv2d(
+            input_channels, input_channels, kernel_size=kernel_size, padding='same', flag=1,
+            theta=self.theta, sdm_mask_type=self.sdm_mask_type, sdm_topk=self.sdm_topk
+        )
         self.f1 = MaskConv2d(input_channels, input_channels, kernel_size=1, padding='same', flag=3)
         layers1.extend([
             self.c1,
@@ -177,7 +192,10 @@ class MaskCNN_1(nn.Module):
             LayerNorm((1, input_channels, 1, 1), dim_index=1),
             nn.GELU(),
         ])
-        self.c2 = MaskConv2d(input_channels, input_channels, kernel_size=kernel_size, padding='same', flag=1,theta=self.theta)
+        self.c2 = MaskConv2d(
+            input_channels, input_channels, kernel_size=kernel_size, padding='same', flag=1,
+            theta=self.theta, sdm_mask_type=self.sdm_mask_type, sdm_topk=self.sdm_topk
+        )
         self.f2 = MaskConv2d(input_channels, input_channels, kernel_size=1, padding='same', flag=3)
         layers2.extend([
             self.c2,
@@ -320,23 +338,36 @@ class MaskCNN_1(nn.Module):
         return linear_atts_dc1
 
 class MaskCNN_2(nn.Module):
-    def __init__(self, input_channels, output_channels, kernel_size=3, depth=3, theta=1, bfm_type='legacy'):
+    def __init__(self, input_channels, output_channels, kernel_size=3, depth=3, theta=1,
+                 bfm_type='legacy', sdm_mask_type='hard_gumbel', sdm_topk=2):
         super(MaskCNN_2, self).__init__()
         
         self.theta = theta
         self.inchannels = input_channels
         self.bfm_type = bfm_type
+        self.sdm_mask_type = sdm_mask_type
+        self.sdm_topk = sdm_topk
         if self.bfm_type not in ('legacy', 'pyramid', 'pyramid_gated'):
             raise ValueError(
                 "bfm_type must be one of ['legacy', 'pyramid', 'pyramid_gated'], "
                 f"got {self.bfm_type}"
             )
+        if self.sdm_mask_type not in ('hard_gumbel', 'soft_topk', 'softmax'):
+            raise ValueError(
+                "sdm_mask_type must be one of ['hard_gumbel', 'soft_topk', 'softmax'], "
+                f"got {self.sdm_mask_type}"
+            )
+        if self.sdm_topk <= 0:
+            raise ValueError(f"sdm_topk must be > 0, got {self.sdm_topk}")
         layers1 = []
         layers2 = []
         layers3 = []
         layers4 = []
 
-        self.c1 = MaskConv2d(input_channels, input_channels, kernel_size=kernel_size, padding='same', flag=1,theta=self.theta)
+        self.c1 = MaskConv2d(
+            input_channels, input_channels, kernel_size=kernel_size, padding='same', flag=1,
+            theta=self.theta, sdm_mask_type=self.sdm_mask_type, sdm_topk=self.sdm_topk
+        )
         self.f1 = MaskConv2d(input_channels, input_channels, kernel_size=1, padding='same', flag=3)
         layers1.extend([
             self.c1,
@@ -349,7 +380,10 @@ class MaskCNN_2(nn.Module):
             LayerNorm((1, input_channels, 1, 1), dim_index=1),
             nn.GELU(),
         ])
-        self.c2 = MaskConv2d(input_channels, input_channels, kernel_size=kernel_size, padding='same', flag=1,theta=self.theta)
+        self.c2 = MaskConv2d(
+            input_channels, input_channels, kernel_size=kernel_size, padding='same', flag=1,
+            theta=self.theta, sdm_mask_type=self.sdm_mask_type, sdm_topk=self.sdm_topk
+        )
         self.f2 = MaskConv2d(input_channels, input_channels, kernel_size=1, padding='same', flag=3)
         layers2.extend([
             self.c2,
