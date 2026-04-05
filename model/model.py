@@ -138,6 +138,7 @@ class CNNNer(nn.Module):
                  n_layer=2,separateness_rate=0.1,theta=1,loss_theta=1,
                  size_feature_type='embed',
                  word_pooling='max',pool_gate_type='scalar',refiner_type='maskcnn',
+                 span_encoder_type='none',
                  pair_scorer='biaffine',gp_hidden=8,lowrank_dim=64,
                  mlp_type='mlp',fusion_type='sum',bfm_type='legacy',
                  sdm_mask_type='hard_gumbel', sdm_topk=2,
@@ -156,6 +157,11 @@ class CNNNer(nn.Module):
         if refiner_type not in ('maskcnn', 'dilated'):
             raise ValueError(f"refiner_type must be one of ['maskcnn', 'dilated'], got {refiner_type}")
         self.refiner_type = refiner_type
+        if span_encoder_type not in ('none', 'dwconv_res'):
+            raise ValueError(
+                f"span_encoder_type must be one of ['none', 'dwconv_res'], got {span_encoder_type}"
+            )
+        self.span_encoder_type = span_encoder_type
         if bfm_type not in ('legacy', 'pyramid', 'pyramid_gated', 'pyramid_gated_se'):
             raise ValueError(
                 "bfm_type must be one of ['legacy', 'pyramid', 'pyramid_gated', 'pyramid_gated_se'], "
@@ -200,6 +206,18 @@ class CNNNer(nn.Module):
         # self.param_span= nn.Parameter(torch.randn(2,cnn_dim)/20,requires_grad=True)
         self.pretrain_model = AutoModel.from_pretrained(model_name)
         hidden_size = self.pretrain_model.config.hidden_size
+        if self.span_encoder_type == 'dwconv_res':
+            self.span_norm = nn.LayerNorm(hidden_size)
+            self.span_dwconv = nn.Conv1d(
+                hidden_size, hidden_size, kernel_size=3, padding=1, groups=hidden_size, bias=False
+            )
+            self.span_pwconv = nn.Conv1d(hidden_size, hidden_size, kernel_size=1, bias=True)
+            self.span_drop = nn.Dropout(logit_drop)
+            self.span_res_scale = nn.Parameter(torch.tensor(0.0))
+            torch.nn.init.xavier_normal_(self.span_dwconv.weight.data)
+            torch.nn.init.xavier_normal_(self.span_pwconv.weight.data)
+            if self.span_pwconv.bias is not None:
+                torch.nn.init.zeros_(self.span_pwconv.bias.data)
         if self.word_pooling == 'mix':
             if self.pool_gate_type == 'channel':
                 self.pool_mix_logit = nn.Parameter(torch.zeros(1, 1, hidden_size))
@@ -312,6 +330,13 @@ class CNNNer(nn.Module):
         else:
             word_states = scatter_max(last_hidden_states, index=indexes, dim=1)[0]
         state = word_states[:,1:]
+        if self.span_encoder_type == 'dwconv_res':
+            y = self.span_norm(state).transpose(1, 2)
+            y = self.span_dwconv(y)
+            y = self.span_pwconv(y)
+            y = F.gelu(y)
+            y = self.span_drop(y).transpose(1, 2)
+            state = state + torch.tanh(self.span_res_scale) * y
         lengths, _ = indexes.max(dim=-1)
         head_state = self.head_mlp(state)
         tail_state = self.tail_mlp(state)

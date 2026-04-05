@@ -54,6 +54,7 @@ parser.add_argument('--size_feature_type', default='embed', choices=['embed', 'b
 parser.add_argument('--word_pooling', default='max', choices=['max', 'mean', 'mix'], type=str)
 parser.add_argument('--pool_gate_type', default='scalar', choices=['scalar', 'channel'], type=str)
 parser.add_argument('--refiner_type', default='maskcnn', choices=['maskcnn', 'dilated'], type=str)
+parser.add_argument('--span_encoder_type', default='none', choices=['none', 'dwconv_res'], type=str)
 parser.add_argument('--pair_scorer', default='biaffine', choices=['biaffine', 'rope_gp', 'lowrank'], type=str)
 parser.add_argument('--gp_hidden', default=8, type=int)
 parser.add_argument('--lowrank_dim', default=64, type=int)
@@ -204,7 +205,8 @@ model = CNNNer(model_name, num_ner_tag=matrix_segs['ent'], cnn_dim=args.cnn_dim,
                separateness_rate=args.separateness_rate/100, theta=args.theta,
                loss_theta=args.loss_theta, size_feature_type=args.size_feature_type,
                word_pooling=args.word_pooling, pool_gate_type=args.pool_gate_type,
-               refiner_type=args.refiner_type, pair_scorer=args.pair_scorer,
+               refiner_type=args.refiner_type, span_encoder_type=args.span_encoder_type,
+               pair_scorer=args.pair_scorer,
                gp_hidden=args.gp_hidden, lowrank_dim=args.lowrank_dim, mlp_type=args.mlp_type,
                fusion_type=args.fusion_type, bfm_type=args.bfm_type,
                sdm_mask_type=args.sdm_mask_type, sdm_topk=args.sdm_topk,
