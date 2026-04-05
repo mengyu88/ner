@@ -149,6 +149,46 @@ class PyramidGatedBFM(nn.Module):
         return out.masked_fill(m0, 0)
 
 
+class PyramidGatedSEBFM(nn.Module):
+    """
+    PyramidGatedBFM + lightweight channel re-weighting.
+    """
+
+    def __init__(self, channels, se_ratio=4):
+        super(PyramidGatedSEBFM, self).__init__()
+        self.enc0 = _BFMConvBlock(channels, stride=1)
+        self.enc1 = _BFMConvBlock(channels, stride=2)
+        self.bridge = _BFMConvBlock(channels, stride=1)
+        self.dec0 = _BFMConvBlock(channels, stride=1)
+        self.gate = nn.Conv2d(channels * 2, channels, kernel_size=1, bias=True)
+        se_hidden = max(channels // se_ratio, 8)
+        self.se_reduce = nn.Conv2d(channels, se_hidden, kernel_size=1, bias=True)
+        self.se_expand = nn.Conv2d(se_hidden, channels, kernel_size=1, bias=True)
+        self.out = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
+
+    def _channel_reweight(self, x):
+        w = F.adaptive_avg_pool2d(x, output_size=1)
+        w = F.gelu(self.se_reduce(w))
+        w = torch.sigmoid(self.se_expand(w))
+        return x * w
+
+    def forward(self, x, mask):
+        m0 = _resize_mask(mask, x)
+        e0 = self.enc0(x, m0)
+        e1 = self.enc1(e0, _resize_mask(m0, e0))
+        b = self.bridge(e1, _resize_mask(m0, e1))
+
+        u0 = F.interpolate(b, size=e0.shape[-2:], mode='nearest') + e0
+        u0 = self.dec0(u0, _resize_mask(m0, u0))
+
+        gate_in = torch.cat([u0, e0], dim=1).masked_fill(m0, 0)
+        gate = torch.sigmoid(self.gate(gate_in))
+        fused = gate * u0 + (1.0 - gate) * e0
+        fused = self._channel_reweight(fused.masked_fill(m0, 0))
+        out = self.out(fused.masked_fill(m0, 0))
+        return out.masked_fill(m0, 0)
+
+
 class MaskCNN_1(nn.Module):
     def __init__(self, input_channels, output_channels, kernel_size=3, depth=3, theta=1,
                  bfm_type='legacy', sdm_mask_type='hard_gumbel', sdm_topk=2):
@@ -159,14 +199,14 @@ class MaskCNN_1(nn.Module):
         self.bfm_type = bfm_type
         self.sdm_mask_type = sdm_mask_type
         self.sdm_topk = sdm_topk
-        if self.bfm_type not in ('legacy', 'pyramid', 'pyramid_gated'):
+        if self.bfm_type not in ('legacy', 'pyramid', 'pyramid_gated', 'pyramid_gated_se'):
             raise ValueError(
-                "bfm_type must be one of ['legacy', 'pyramid', 'pyramid_gated'], "
+                "bfm_type must be one of ['legacy', 'pyramid', 'pyramid_gated', 'pyramid_gated_se'], "
                 f"got {self.bfm_type}"
             )
-        if self.sdm_mask_type not in ('hard_gumbel', 'soft_topk', 'softmax'):
+        if self.sdm_mask_type not in ('hard_gumbel', 'soft_topk', 'soft_topk_mix', 'softmax'):
             raise ValueError(
-                "sdm_mask_type must be one of ['hard_gumbel', 'soft_topk', 'softmax'], "
+                "sdm_mask_type must be one of ['hard_gumbel', 'soft_topk', 'soft_topk_mix', 'softmax'], "
                 f"got {self.sdm_mask_type}"
             )
         if self.sdm_topk <= 0:
@@ -220,8 +260,10 @@ class MaskCNN_1(nn.Module):
             ])
         elif self.bfm_type == 'pyramid':
             self.bfm = PyramidBFM(input_channels)
-        else:
+        elif self.bfm_type == 'pyramid_gated':
             self.bfm = PyramidGatedBFM(input_channels)
+        else:
+            self.bfm = PyramidGatedSEBFM(input_channels)
         self.cnns1 = nn.ModuleList(layers1)
         self.cnns2 = nn.ModuleList(layers2)
         self.cnns3 = nn.ModuleList(layers3)
@@ -347,14 +389,14 @@ class MaskCNN_2(nn.Module):
         self.bfm_type = bfm_type
         self.sdm_mask_type = sdm_mask_type
         self.sdm_topk = sdm_topk
-        if self.bfm_type not in ('legacy', 'pyramid', 'pyramid_gated'):
+        if self.bfm_type not in ('legacy', 'pyramid', 'pyramid_gated', 'pyramid_gated_se'):
             raise ValueError(
-                "bfm_type must be one of ['legacy', 'pyramid', 'pyramid_gated'], "
+                "bfm_type must be one of ['legacy', 'pyramid', 'pyramid_gated', 'pyramid_gated_se'], "
                 f"got {self.bfm_type}"
             )
-        if self.sdm_mask_type not in ('hard_gumbel', 'soft_topk', 'softmax'):
+        if self.sdm_mask_type not in ('hard_gumbel', 'soft_topk', 'soft_topk_mix', 'softmax'):
             raise ValueError(
-                "sdm_mask_type must be one of ['hard_gumbel', 'soft_topk', 'softmax'], "
+                "sdm_mask_type must be one of ['hard_gumbel', 'soft_topk', 'soft_topk_mix', 'softmax'], "
                 f"got {self.sdm_mask_type}"
             )
         if self.sdm_topk <= 0:
@@ -408,8 +450,10 @@ class MaskCNN_2(nn.Module):
             ])
         elif self.bfm_type == 'pyramid':
             self.bfm = PyramidBFM(input_channels)
-        else:
+        elif self.bfm_type == 'pyramid_gated':
             self.bfm = PyramidGatedBFM(input_channels)
+        else:
+            self.bfm = PyramidGatedSEBFM(input_channels)
         self.cnns1 = nn.ModuleList(layers1)
         self.cnns2 = nn.ModuleList(layers2)
         self.cnns3 = nn.ModuleList(layers3)

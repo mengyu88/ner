@@ -57,10 +57,22 @@ class Soft_argmax(nn.Module):
         self.t = t
         self.mask_type = mask_type
         self.topk = topk
+        if self.mask_type == 'soft_topk_mix':
+            # Learnable global mixture weight:
+            # 1.0 -> sparse top-k mask, 0.0 -> dense softmax mask.
+            self.mix_logit = nn.Parameter(torch.tensor(0.0))
+        else:
+            self.register_parameter('mix_logit', None)
 
     def forward(self,x):
         if self.mask_type == 'soft_topk':
             return soft_topk_mask(x, topk=self.topk, temperature=self.t)
+        if self.mask_type == 'soft_topk_mix':
+            sparse = soft_topk_mask(x, topk=self.topk, temperature=self.t)
+            temperature = max(float(self.t), 1e-6)
+            dense = F.softmax(x / temperature, dim=1)
+            mix = torch.sigmoid(self.mix_logit)
+            return mix * sparse + (1.0 - mix) * dense
         if self.mask_type == 'softmax':
             temperature = max(float(self.t), 1e-6)
             return F.softmax(x / temperature, dim=1)

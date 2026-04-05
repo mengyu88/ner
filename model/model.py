@@ -118,15 +118,15 @@ class CNNNer(nn.Module):
         if refiner_type not in ('maskcnn', 'dilated'):
             raise ValueError(f"refiner_type must be one of ['maskcnn', 'dilated'], got {refiner_type}")
         self.refiner_type = refiner_type
-        if bfm_type not in ('legacy', 'pyramid', 'pyramid_gated'):
+        if bfm_type not in ('legacy', 'pyramid', 'pyramid_gated', 'pyramid_gated_se'):
             raise ValueError(
-                "bfm_type must be one of ['legacy', 'pyramid', 'pyramid_gated'], "
+                "bfm_type must be one of ['legacy', 'pyramid', 'pyramid_gated', 'pyramid_gated_se'], "
                 f"got {bfm_type}"
             )
         self.bfm_type = bfm_type
-        if sdm_mask_type not in ('hard_gumbel', 'soft_topk', 'softmax'):
+        if sdm_mask_type not in ('hard_gumbel', 'soft_topk', 'soft_topk_mix', 'softmax'):
             raise ValueError(
-                "sdm_mask_type must be one of ['hard_gumbel', 'soft_topk', 'softmax'], "
+                "sdm_mask_type must be one of ['hard_gumbel', 'soft_topk', 'soft_topk_mix', 'softmax'], "
                 f"got {sdm_mask_type}"
             )
         if sdm_topk <= 0:

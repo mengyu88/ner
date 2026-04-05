@@ -59,9 +59,10 @@ parser.add_argument('--gp_hidden', default=8, type=int)
 parser.add_argument('--lowrank_dim', default=64, type=int)
 parser.add_argument('--mlp_type', default='mlp', choices=['mlp', 'geglu'], type=str)
 parser.add_argument('--fusion_type', default='sum', choices=['sum', 'adaptive'], type=str)
-parser.add_argument('--bfm_type', default='legacy', choices=['legacy', 'pyramid', 'pyramid_gated'], type=str)
+parser.add_argument('--bfm_type', default='legacy',
+                    choices=['legacy', 'pyramid', 'pyramid_gated', 'pyramid_gated_se'], type=str)
 parser.add_argument('--sdm_mask_type', default='hard_gumbel',
-                    choices=['hard_gumbel', 'soft_topk', 'softmax'], type=str)
+                    choices=['hard_gumbel', 'soft_topk', 'soft_topk_mix', 'softmax'], type=str)
 parser.add_argument('--sdm_topk', default=2, type=int)
 
 
