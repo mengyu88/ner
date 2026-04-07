@@ -393,8 +393,13 @@ class CNNNer(nn.Module):
         assert final_score.size(-1) == matrix.size(-1)
         if self.training:
             flat_scores = final_score.reshape(-1)
-            mask = matrix.reshape(-1).ne(-100).float().view(input_ids.size(0), -1)
-            flat_loss = F.binary_cross_entropy_with_logits(flat_scores, matrix.reshape(-1).float(), reduction='none')
+            flat_targets = matrix.reshape(-1).float()
+            mask = flat_targets.ne(-100).float().view(input_ids.size(0), -1)
+            flat_loss = F.binary_cross_entropy_with_logits(flat_scores, flat_targets, reduction='none')
+            if self.loss_theta != 1:
+                # loss_theta>1 up-weights positive spans to improve recall under heavy class imbalance.
+                pos_w = torch.where(flat_targets > 0.5, self.loss_theta, 1.0)
+                flat_loss = flat_loss * pos_w
             loss = ((flat_loss.view(input_ids.size(0), -1) * mask).sum(dim=-1)).mean()
             return {'loss':loss}
         return {'scores': final_score}
