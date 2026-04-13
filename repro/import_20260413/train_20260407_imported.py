@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import warnings
 import argparse
 # from torchstat import stat
@@ -22,6 +23,11 @@ from fastNLP import TorchWarmupCallback
 import fitlog
 
 # fitlog.debug()
+
+# Make `data/` and `model/` importable when running as a script.
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 from model.model import CNNNer
 from model.metrics import NERMetric
@@ -47,7 +53,6 @@ parser.add_argument('--n_head', default=5, type=int)
 parser.add_argument('--seed', default=0, type=int)
 parser.add_argument('--n_layer', default=1, type=int)
 parser.add_argument('--accumulation_steps', default=1, type=int)
-parser.add_argument('--fp16', action='store_true')
 parser.add_argument('--separateness_rate', default=5, type=int)
 parser.add_argument('--theta', default=1, type=float)
 parser.add_argument('--loss_theta', default=1, type=float)
@@ -71,15 +76,6 @@ parser.add_argument('--char_vocab_size', default=2048, type=int)
 parser.add_argument('--char_dim', default=32, type=int)
 parser.add_argument('--char_max_len', default=16, type=int)
 parser.add_argument('--char_dropout', default=0.1, type=float)
-parser.add_argument('--class_pos_weights', default='', type=str,
-                    help='Comma-separated class positive weights, e.g. 1.2,1.0,1.4,1.0,1.1')
-parser.add_argument('--auto_class_pos_weight', action='store_true')
-parser.add_argument('--class_weight_power', default=0.5, type=float)
-parser.add_argument('--class_weight_min', default=0.8, type=float)
-parser.add_argument('--class_weight_max', default=1.8, type=float)
-parser.add_argument('--short_span_pos_boost', default=1.0, type=float)
-parser.add_argument('--short_span_neg_boost', default=1.0, type=float)
-parser.add_argument('--short_span_max_len', default=2, type=int)
 parser.add_argument('--sad_relation_bias', action='store_true')
 parser.add_argument('--sad_dynamic_depthwise', action='store_true')
 parser.add_argument('--sad_local_sparse_attn', action='store_true')
@@ -129,6 +125,9 @@ def resolve_model_name(dataset_name, model_name):
         'bert-large-cased': ['AI-ModelScope/bert-large-cased', 'bert-large-cased'],
         'bert-base-chinese': ['AI-ModelScope/bert-base-chinese', 'bert-base-chinese'],
         'dmis-lab/biobert-v1.1': ['dmis-lab/biobert-v1.1', 'AI-ModelScope/biobert-v1.1'],
+        'microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract-fulltext': [
+            'microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract-fulltext'
+        ],
     }
     candidate_ids = modelscope_candidates.get(model_id, [model_id])
     from modelscope.hub.snapshot_download import snapshot_download
@@ -216,46 +215,6 @@ dl.apply_field(densify, field_name='matrix', new_field_name='matrix', progress_b
 print(dl)
 label2idx = getattr(dl, 'ner_vocab') if hasattr(dl, 'ner_vocab') else getattr(dl, 'label2idx')
 print(f"{len(label2idx)} labels: {label2idx}, matrix_segs:{matrix_segs}")
-
-
-def _parse_class_pos_weights(raw, num_class):
-    raw = (raw or '').strip()
-    if not raw:
-        return None
-    vals = [float(x.strip()) for x in raw.split(',') if x.strip()]
-    if len(vals) != num_class:
-        raise ValueError(f'class_pos_weights length {len(vals)} != num_class {num_class}')
-    return vals
-
-
-def _compute_auto_class_pos_weights(train_ds, num_class, power, min_w, max_w):
-    pos_counts = np.zeros(num_class, dtype=np.float64)
-    for ins in train_ds:
-        matrix = ins['matrix']
-        if hasattr(matrix, 'todense'):
-            matrix = matrix.todense()
-        matrix = np.asarray(matrix)
-        pos_counts += (matrix > 0.5).reshape(-1, num_class).sum(axis=0)
-    mean_pos = pos_counts.mean() + 1e-12
-    weights = np.power(mean_pos / (pos_counts + 1e-12), power)
-    weights = weights / (weights.mean() + 1e-12)
-    weights = np.clip(weights, min_w, max_w)
-    return weights.tolist(), pos_counts.tolist()
-
-
-class_pos_weights = _parse_class_pos_weights(args.class_pos_weights, matrix_segs['ent'])
-if class_pos_weights is None and args.auto_class_pos_weight:
-    class_pos_weights, pos_counts = _compute_auto_class_pos_weights(
-        dl.get_dataset('train'),
-        matrix_segs['ent'],
-        args.class_weight_power,
-        args.class_weight_min,
-        args.class_weight_max,
-    )
-    print(f'Auto class_pos_weights={class_pos_weights}, pos_counts={pos_counts}')
-if class_pos_weights is not None:
-    fitlog.add_other(value=class_pos_weights, name='class_pos_weights')
-
 dls = {}
 for name, ds in dl.iter_datasets():
     ds.set_pad('matrix', pad_fn=Torch3DMatrixPadder(pad_val=ds.collator.input_fields['matrix']['pad_val'],
@@ -287,10 +246,6 @@ model = CNNNer(model_name, num_ner_tag=matrix_segs['ent'], cnn_dim=args.cnn_dim,
                char_dim=args.char_dim,
                char_max_len=args.char_max_len,
                char_dropout=args.char_dropout,
-               class_pos_weights=class_pos_weights,
-               short_span_pos_boost=args.short_span_pos_boost,
-               short_span_neg_boost=args.short_span_neg_boost,
-               short_span_max_len=args.short_span_max_len,
                sad_relation_bias=args.sad_relation_bias,
                sad_dynamic_depthwise=args.sad_dynamic_depthwise,
                sad_local_sparse_attn=args.sad_local_sparse_attn,
@@ -383,7 +338,7 @@ trainer = Trainer(model=model,
                   evaluate_every=-1,
                   evaluate_use_dist_sampler=True,
                   accumulation_steps=args.accumulation_steps,
-                  fp16=args.fp16,
+                  fp16=False,
                   progress_bar='rich')
 
 if args.load_model_dir:

@@ -6,16 +6,26 @@
 
 在不破坏官方主干的前提下，对关键模块做可插拔增强，形成可对比的 baseline 框架。
 
+## 1.1 代码收敛（2026-04-13）
+
+按“保留最优框架、移除无效分支”的策略，训练与模型代码已固定为单一路径：
+
+- `bfm_type=pyramid_gated`
+- `sdm_mask_type=soft_topk_mix`（`sdm_topk=2`）
+- `head_type=residual_mlp`
+- `pair_scorer=biaffine`
+- `fusion_type=sum`
+- `refiner_type=maskcnn`
+- `span_encoder_type=none`
+
+对应地，`train.py` 的相关可选参数已移除，不再保留多路实验开关。
+
 ## 2. 相对官方的主要改动模块
 
 ### 2.1 SDM（Self-adaptive Differentiation Module）
 
 - 官方：`hard argmax + gumbel` 单一路径。
-- 当前：支持多种掩码策略，可切换：
-  - `hard_gumbel`
-  - `soft_topk`
-  - `soft_topk_mix`
-  - `softmax`
+- 当前：固定为 `soft_topk_mix`（`topk=2`）单路径。
 
 代码位置：
 - `model/cnn_liabrary.py`
@@ -24,11 +34,7 @@
 ### 2.2 BFM（Boundary Filtration Module）
 
 - 官方：原始 `legacy` 过滤分支。
-- 当前：支持多种 BFM 结构：
-  - `legacy`（官方）
-  - `pyramid`
-  - `pyramid_gated`
-  - `pyramid_gated_se`
+- 当前：固定为 `pyramid_gated`。
 
 代码位置：
 - `model/cnn.py`
@@ -41,19 +47,19 @@
 代码位置：
 - `model/model.py`
 
-### 2.4 Refiner 可选增强（保留）
+### 2.4 Refiner 收敛
 
 - 官方：`maskcnn`。
-- 当前：新增 `dilated` 轻量残差空洞卷积分支作为可选增强。
+- 当前：固定为 `maskcnn`，`dilated` 分支已移除。
 
 代码位置：
 - `model/cnn.py`
 - `model/model.py`
 
-### 2.5 Span Semantic Encoder 可选增强（保留）
+### 2.5 Span Semantic Encoder 收敛
 
 - 官方：词级聚合后直接进入后续打分。
-- 当前：新增 `span_encoder_type=dwconv_res`，在词级表示后加入轻量局部上下文残差增强（depthwise + pointwise conv）。
+- 当前：固定为 `none`，`dwconv_res` 分支已移除。
 
 代码位置：
 - `model/model.py`
@@ -101,24 +107,34 @@ python train.py \
   -n 5 -d weibo \
   --model_name /mnt/workspace/pretrained_models/google-bert/bert-base-chinese \
   --lr 2e-5 --cnn_dim 120 -b 2 --accumulation_steps 8 \
-  --cnn_depth 1 --n_head 4 --logit_drop 0.1 --seed 42 --n_layer 1 \
-  --size_feature_type bias --word_pooling mix --pool_gate_type scalar \
-  --refiner_type maskcnn --span_encoder_type none \
-  --pair_scorer biaffine --mlp_type mlp --fusion_type sum \
-  --head_type residual_mlp \
-  --bfm_type pyramid_gated --sdm_mask_type soft_topk_mix --sdm_topk 2
+  --cnn_depth 1 --n_head 4 --logit_drop 0.1 --seed 42 --n_layer 1
 ```
 
-### 6.2 可选增强 A：Refiner 切换到 dilated
+当前版本已固定最优主框架，不再支持 `dilated` 与 `dwconv_res` 等可选分支。
+
+### 6.2 冲击 82 的建议训练命令（GENIA）
 
 ```bash
-python train.py ... --refiner_type dilated
+python train.py \
+  -n 1 -d genia \
+  --model_name /root/.cache/huggingface/hub/models--dmis-lab--biobert-v1.1/snapshots/551ca18efd7f052c8dfa0b01c94c2a8e68bc5488 \
+  --lr 7e-6 --encoder_lr 2e-5 \
+  --cnn_dim 200 --biaffine_size 200 --n_head 4 --cnn_depth 1 --n_layer 2 \
+  -b 4 --accumulation_steps 2 --logit_drop 0.15 --loss_theta 1.5 \
+  --load_model_dir /root/ner/_saved_models/2026-04-07-18_41_58_380108/model-epoch_1-batch_7512-f#f#test_81.54 \
+  --adv_type fgm --adv_epsilon 1.0 \
+  --ent_thres 0.5
 ```
 
-### 6.3 可选增强 B：Span Encoder 增强
+训练后可做阈值扫描（先看 dev 最优，再取同阈值 test）：
 
 ```bash
-python train.py ... --span_encoder_type dwconv_res
+python repro/sweep_genia_threshold.py \
+  --model_name /root/.cache/huggingface/hub/models--dmis-lab--biobert-v1.1/snapshots/551ca18efd7f052c8dfa0b01c94c2a8e68bc5488 \
+  --ckpt /root/ner/_saved_models/<your_run>/<your_ckpt_dir> \
+  --thresholds 0.45:0.60:0.01 \
+  --cnn_dim 200 --biaffine_size 200 --n_head 4 --cnn_depth 1 --n_layer 2 \
+  --logit_drop 0.15 --loss_theta 1.5
 ```
 
 ## 7. 关键代码入口
@@ -127,4 +143,3 @@ python train.py ... --span_encoder_type dwconv_res
 - 主模型与打分头：`model/model.py`
 - SDM/BFM 与 Refiner：`model/cnn.py`
 - SDM 掩码策略：`model/cnn_liabrary.py`
-

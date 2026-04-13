@@ -11,19 +11,20 @@ from fastNLP.io import Loader, DataBundle, iob2
 
 class UnifyPipe(Pipe):
     def __init__(self, model_name):
-        if 'msra' not in model_name:
+        model_name_lc = model_name.lower()
+        if 'msra' not in model_name_lc:
             self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         else:
             self.tokenizer = BertTokenizerFast.from_pretrained('bert-base-chinese')
-        if 'roberta' in model_name:
+        if 'roberta' in model_name_lc:
             self.add_prefix_space = True
             self.cls = self.tokenizer.cls_token_id
             self.sep = self.tokenizer.sep_token_id
-        elif 'deberta' in model_name:
+        elif 'deberta' in model_name_lc:
             self.add_prefix_space = False
             self.cls = self.tokenizer.bos_token_id
             self.sep = self.tokenizer.eos_token_id
-        elif 'bert' in model_name:
+        elif 'bert' in model_name_lc:
             self.add_prefix_space = False
             self.cls = self.tokenizer.cls_token_id
             self.sep = self.tokenizer.sep_token_id
