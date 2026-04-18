@@ -21,6 +21,11 @@ from fastNLP import SortedSampler, BucketedBatchSampler
 from fastNLP import TorchWarmupCallback
 import fitlog
 
+# Compatibility for legacy fitlog versions on NumPy>=2.
+for _alias, _type in (('str', str), ('int', int), ('float', float), ('bool', bool)):
+    if not hasattr(np, _alias):
+        setattr(np, _alias, _type)
+
 # fitlog.debug()
 
 from model.model import CNNNer
@@ -83,7 +88,12 @@ parser.add_argument('--short_span_max_len', default=2, type=int)
 parser.add_argument('--sad_relation_bias', action='store_true')
 parser.add_argument('--sad_dynamic_depthwise', action='store_true')
 parser.add_argument('--sad_local_sparse_attn', action='store_true')
+parser.add_argument('--sdm_topk', default=2, type=int)
 parser.add_argument('--sad_attn_topk', default=4, type=int)
+parser.add_argument('--sad_attn_heads', default=1, type=int)
+parser.add_argument('--sad_relation_rich_bias', action='store_true')
+parser.add_argument('--sad_dual_path_fusion', action='store_true')
+parser.add_argument('--sad_dual_path_gate_map', action='store_true')
 
 # Keep only the current best-performing framework path.
 BEST_FRAMEWORK = {
@@ -98,7 +108,6 @@ BEST_FRAMEWORK = {
     'head_type': 'residual_mlp',
     'bfm_type': 'pyramid_gated',
     'sdm_mask_type': 'soft_topk_mix',
-    'sdm_topk': 2,
 }
 
 
@@ -179,7 +188,9 @@ seed = fitlog.set_rng_seed(rng_seed=args.seed)
 seed_torch(args.seed)
 os.environ['FASTNLP_GLOBAL_SEED'] = str(seed)
 fitlog.add_hyper(args)
-fitlog.add_hyper(BEST_FRAMEWORK, name='best_framework')
+framework_hyper = dict(BEST_FRAMEWORK)
+framework_hyper['sdm_topk'] = args.sdm_topk
+fitlog.add_hyper(framework_hyper, name='best_framework')
 fitlog.add_hyper_in_file(__file__)
 
 @cache_results('caches/ner_caches.pkl', _refresh=False)
@@ -294,7 +305,12 @@ model = CNNNer(model_name, num_ner_tag=matrix_segs['ent'], cnn_dim=args.cnn_dim,
                sad_relation_bias=args.sad_relation_bias,
                sad_dynamic_depthwise=args.sad_dynamic_depthwise,
                sad_local_sparse_attn=args.sad_local_sparse_attn,
+               sdm_topk=args.sdm_topk,
                sad_attn_topk=args.sad_attn_topk,
+               sad_attn_heads=args.sad_attn_heads,
+               sad_relation_rich_bias=args.sad_relation_rich_bias,
+               sad_dual_path_fusion=args.sad_dual_path_fusion,
+               sad_dual_path_gate_map=args.sad_dual_path_gate_map,
                **BEST_FRAMEWORK)
 
 # optimizer

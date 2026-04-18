@@ -36,7 +36,12 @@ class MaskConv2d(nn.Module):
         sad_relation_bias=False,
         sad_dynamic_depthwise=False,
         sad_local_sparse_attn=False,
+        sdm_topk=2,
         sad_attn_topk=4,
+        sad_attn_heads=1,
+        sad_relation_rich_bias=False,
+        sad_dual_path_fusion=False,
+        sad_dual_path_gate_map=False,
     ):
         super(MaskConv2d, self).__init__()
         self.in_ch = in_ch
@@ -55,7 +60,12 @@ class MaskConv2d(nn.Module):
                 relation_bias=sad_relation_bias,
                 dynamic_depthwise=sad_dynamic_depthwise,
                 local_sparse_attn=sad_local_sparse_attn,
+                sdm_topk=sdm_topk,
                 attn_topk=sad_attn_topk,
+                attn_heads=sad_attn_heads,
+                relation_rich_bias=sad_relation_rich_bias,
+                dual_path_fusion=sad_dual_path_fusion,
+                dual_path_gate_map=sad_dual_path_gate_map,
             )
         elif flag in (3, 4):
             self.conv2d_3 = nn.Conv2d(
@@ -145,7 +155,12 @@ class MaskCNN_1(nn.Module):
         sad_relation_bias=False,
         sad_dynamic_depthwise=False,
         sad_local_sparse_attn=False,
+        sdm_topk=2,
         sad_attn_topk=4,
+        sad_attn_heads=1,
+        sad_relation_rich_bias=False,
+        sad_dual_path_fusion=False,
+        sad_dual_path_gate_map=False,
     ):
         super(MaskCNN_1, self).__init__()
         self.theta = theta
@@ -165,7 +180,12 @@ class MaskCNN_1(nn.Module):
             sad_relation_bias=sad_relation_bias,
             sad_dynamic_depthwise=sad_dynamic_depthwise,
             sad_local_sparse_attn=sad_local_sparse_attn,
+            sdm_topk=sdm_topk,
             sad_attn_topk=sad_attn_topk,
+            sad_attn_heads=sad_attn_heads,
+            sad_relation_rich_bias=sad_relation_rich_bias,
+            sad_dual_path_fusion=sad_dual_path_fusion,
+            sad_dual_path_gate_map=sad_dual_path_gate_map,
         )
         self.f1 = MaskConv2d(input_channels, input_channels, kernel_size=1, padding='same', flag=3)
         layers1.extend(
@@ -191,7 +211,12 @@ class MaskCNN_1(nn.Module):
             sad_relation_bias=sad_relation_bias,
             sad_dynamic_depthwise=sad_dynamic_depthwise,
             sad_local_sparse_attn=sad_local_sparse_attn,
+            sdm_topk=sdm_topk,
             sad_attn_topk=sad_attn_topk,
+            sad_attn_heads=sad_attn_heads,
+            sad_relation_rich_bias=sad_relation_rich_bias,
+            sad_dual_path_fusion=sad_dual_path_fusion,
+            sad_dual_path_gate_map=sad_dual_path_gate_map,
         )
         self.f2 = MaskConv2d(input_channels, input_channels, kernel_size=1, padding='same', flag=3)
         layers2.extend(
@@ -310,7 +335,12 @@ class MaskCNN_2(nn.Module):
         sad_relation_bias=False,
         sad_dynamic_depthwise=False,
         sad_local_sparse_attn=False,
+        sdm_topk=2,
         sad_attn_topk=4,
+        sad_attn_heads=1,
+        sad_relation_rich_bias=False,
+        sad_dual_path_fusion=False,
+        sad_dual_path_gate_map=False,
     ):
         super(MaskCNN_2, self).__init__()
         self.theta = theta
@@ -330,7 +360,12 @@ class MaskCNN_2(nn.Module):
             sad_relation_bias=sad_relation_bias,
             sad_dynamic_depthwise=sad_dynamic_depthwise,
             sad_local_sparse_attn=sad_local_sparse_attn,
+            sdm_topk=sdm_topk,
             sad_attn_topk=sad_attn_topk,
+            sad_attn_heads=sad_attn_heads,
+            sad_relation_rich_bias=sad_relation_rich_bias,
+            sad_dual_path_fusion=sad_dual_path_fusion,
+            sad_dual_path_gate_map=sad_dual_path_gate_map,
         )
         self.f1 = MaskConv2d(input_channels, input_channels, kernel_size=1, padding='same', flag=3)
         layers1.extend(
@@ -356,7 +391,12 @@ class MaskCNN_2(nn.Module):
             sad_relation_bias=sad_relation_bias,
             sad_dynamic_depthwise=sad_dynamic_depthwise,
             sad_local_sparse_attn=sad_local_sparse_attn,
+            sdm_topk=sdm_topk,
             sad_attn_topk=sad_attn_topk,
+            sad_attn_heads=sad_attn_heads,
+            sad_relation_rich_bias=sad_relation_rich_bias,
+            sad_dual_path_fusion=sad_dual_path_fusion,
+            sad_dual_path_gate_map=sad_dual_path_gate_map,
         )
         self.f2 = MaskConv2d(input_channels, input_channels, kernel_size=1, padding='same', flag=3)
         layers2.extend(

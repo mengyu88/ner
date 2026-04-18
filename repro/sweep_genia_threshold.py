@@ -32,7 +32,6 @@ BEST_FRAMEWORK = {
     'head_type': 'residual_mlp',
     'bfm_type': 'pyramid_gated',
     'sdm_mask_type': 'soft_topk_mix',
-    'sdm_topk': 2,
 }
 
 
@@ -117,7 +116,12 @@ def build_model(args, num_ner_tag):
         sad_relation_bias=args.sad_relation_bias,
         sad_dynamic_depthwise=args.sad_dynamic_depthwise,
         sad_local_sparse_attn=args.sad_local_sparse_attn,
+        sdm_topk=args.sdm_topk,
         sad_attn_topk=args.sad_attn_topk,
+        sad_attn_heads=args.sad_attn_heads,
+        sad_relation_rich_bias=args.sad_relation_rich_bias,
+        sad_dual_path_fusion=args.sad_dual_path_fusion,
+        sad_dual_path_gate_map=args.sad_dual_path_gate_map,
         **BEST_FRAMEWORK,
     )
 
@@ -169,7 +173,12 @@ def main():
     parser.add_argument('--sad_relation_bias', action='store_true')
     parser.add_argument('--sad_dynamic_depthwise', action='store_true')
     parser.add_argument('--sad_local_sparse_attn', action='store_true')
+    parser.add_argument('--sdm_topk', type=int, default=2)
     parser.add_argument('--sad_attn_topk', type=int, default=4)
+    parser.add_argument('--sad_attn_heads', type=int, default=1)
+    parser.add_argument('--sad_relation_rich_bias', action='store_true')
+    parser.add_argument('--sad_dual_path_fusion', action='store_true')
+    parser.add_argument('--sad_dual_path_gate_map', action='store_true')
     args = parser.parse_args()
 
     thresholds = parse_thresholds(args.thresholds)

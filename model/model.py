@@ -124,6 +124,10 @@ class CNNNer(nn.Module):
         sad_dynamic_depthwise=False,
         sad_local_sparse_attn=False,
         sad_attn_topk=4,
+        sad_attn_heads=1,
+        sad_relation_rich_bias=False,
+        sad_dual_path_fusion=False,
+        sad_dual_path_gate_map=False,
         boundary_refine=False,
         boundary_scale=0.1,
         boundary_loss_weight=0.2,
@@ -150,7 +154,12 @@ class CNNNer(nn.Module):
         self.sad_relation_bias = bool(sad_relation_bias)
         self.sad_dynamic_depthwise = bool(sad_dynamic_depthwise)
         self.sad_local_sparse_attn = bool(sad_local_sparse_attn)
+        self.sdm_topk = int(sdm_topk)
         self.sad_attn_topk = int(sad_attn_topk)
+        self.sad_attn_heads = int(sad_attn_heads)
+        self.sad_relation_rich_bias = bool(sad_relation_rich_bias)
+        self.sad_dual_path_fusion = bool(sad_dual_path_fusion)
+        self.sad_dual_path_gate_map = bool(sad_dual_path_gate_map)
         self.boundary_refine = bool(boundary_refine)
         self.boundary_scale = float(boundary_scale)
         self.boundary_loss_weight = float(boundary_loss_weight)
@@ -191,8 +200,8 @@ class CNNNer(nn.Module):
         for key, (expected, actual) in fixed_options.items():
             if actual != expected:
                 raise ValueError(f'{key} is fixed to {expected}, got {actual}')
-        if sdm_topk != 2:
-            raise ValueError(f'sdm_topk is fixed to 2, got {sdm_topk}')
+        if self.sdm_topk <= 0:
+            raise ValueError(f'sdm_topk must be > 0, got {self.sdm_topk}')
 
         self.pretrain_model = AutoModel.from_pretrained(model_name)
         hidden_size = self.pretrain_model.config.hidden_size
@@ -250,7 +259,12 @@ class CNNNer(nn.Module):
                     sad_relation_bias=self.sad_relation_bias,
                     sad_dynamic_depthwise=self.sad_dynamic_depthwise,
                     sad_local_sparse_attn=self.sad_local_sparse_attn,
+                    sdm_topk=self.sdm_topk,
                     sad_attn_topk=self.sad_attn_topk,
+                    sad_attn_heads=self.sad_attn_heads,
+                    sad_relation_rich_bias=self.sad_relation_rich_bias,
+                    sad_dual_path_fusion=self.sad_dual_path_fusion,
+                    sad_dual_path_gate_map=self.sad_dual_path_gate_map,
                 )
             elif self.n_layer == 2:
                 self.cnn1 = MaskCNN_2(
@@ -262,7 +276,12 @@ class CNNNer(nn.Module):
                     sad_relation_bias=self.sad_relation_bias,
                     sad_dynamic_depthwise=self.sad_dynamic_depthwise,
                     sad_local_sparse_attn=self.sad_local_sparse_attn,
+                    sdm_topk=self.sdm_topk,
                     sad_attn_topk=self.sad_attn_topk,
+                    sad_attn_heads=self.sad_attn_heads,
+                    sad_relation_rich_bias=self.sad_relation_rich_bias,
+                    sad_dual_path_fusion=self.sad_dual_path_fusion,
+                    sad_dual_path_gate_map=self.sad_dual_path_gate_map,
                 )
             else:
                 raise ValueError(f'Unsupported n_layer={self.n_layer} for refiner_type=maskcnn')
