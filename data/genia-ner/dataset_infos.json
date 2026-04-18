@@ -1,0 +1,1 @@
+{"default": {"features": {"tokens": {"_type": "Value"}, "ner_tags": {"_type": "Value"}}, "splits": {"train": {"name": "train", "dataset_name": "genia-ner"}, "validation": {"name": "validation", "dataset_name": "genia-ner"}, "test": {"name": "test", "dataset_name": "genia-ner"}}}}
