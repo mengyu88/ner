@@ -7,9 +7,45 @@ import torch.nn.functional as F
 from .cnn import MaskCNN_1,MaskCNN_2
 from .multi_head_biaffine3 import MultiHeadBiaffine
 
+
+class ResidualMLPScoreHead(nn.Module):
+    def __init__(self, in_features, out_features, dropout=0.1, hidden_ratio=1.5):
+        super(ResidualMLPScoreHead, self).__init__()
+        hidden_dim = max(int(in_features * hidden_ratio), out_features)
+        self.base = nn.Linear(in_features, out_features)
+        self.norm = nn.LayerNorm(in_features)
+        self.up = nn.Linear(in_features, hidden_dim)
+        self.act = nn.GELU()
+        self.drop = nn.Dropout(dropout)
+        self.down = nn.Linear(hidden_dim, out_features)
+        self.res_scale = nn.Parameter(torch.tensor(0.0))
+
+        torch.nn.init.xavier_normal_(self.base.weight.data)
+        torch.nn.init.xavier_normal_(self.up.weight.data)
+        torch.nn.init.xavier_normal_(self.down.weight.data)
+        if self.base.bias is not None:
+            torch.nn.init.zeros_(self.base.bias.data)
+        if self.up.bias is not None:
+            torch.nn.init.zeros_(self.up.bias.data)
+        if self.down.bias is not None:
+            torch.nn.init.zeros_(self.down.bias.data)
+
+    def forward(self, x):
+        base = self.base(x)
+        y = self.norm(x)
+        y = self.up(y)
+        y = self.act(y)
+        y = self.drop(y)
+        y = self.down(y)
+        return base + torch.tanh(self.res_scale) * y
+
+
 class CNNNer(nn.Module):
     def __init__(self, model_name, num_ner_tag, cnn_dim=200, biaffine_size=200,
-                 size_embed_dim=0, logit_drop=0, kernel_size=3, n_head=4, cnn_depth=3, n_layer=2,separateness_rate=0.1,theta=1,loss_theta=1):
+                 size_embed_dim=0, logit_drop=0, kernel_size=3, n_head=4, cnn_depth=3, n_layer=2,
+                 separateness_rate=0.1, theta=1, loss_theta=1, sad_topk=2,
+                 sad_attn_dim=None, sad_use_rel_bias=True, sad_gate=True,
+                 head_type='linear'):
         super(CNNNer, self).__init__()
         self.mdim =(cnn_dim) 
         self.num_ner_tag = num_ner_tag
@@ -18,6 +54,9 @@ class CNNNer(nn.Module):
         self.cnn_dim = cnn_dim
         self.loss_theta = loss_theta
         self.n_layer = n_layer
+        if head_type not in ('linear', 'residual_mlp'):
+            raise ValueError(f"head_type must be one of ['linear', 'residual_mlp'], got {head_type}")
+        self.head_type = head_type
         # self.param_span= nn.Parameter(torch.randn(2,cnn_dim)/20,requires_grad=True)
         self.pretrain_model = AutoModel.from_pretrained(model_name)
         hidden_size = self.pretrain_model.config.hidden_size
@@ -53,11 +92,39 @@ class CNNNer(nn.Module):
         torch.nn.init.xavier_normal_(self.W.data)
         if cnn_depth > 0:
             if self.n_layer == 1:
-                self.cnn1 = MaskCNN_1(cnn_dim, cnn_dim, kernel_size=kernel_size, depth=cnn_depth,theta=theta)
+                self.cnn1 = MaskCNN_1(
+                    cnn_dim,
+                    cnn_dim,
+                    kernel_size=kernel_size,
+                    depth=cnn_depth,
+                    theta=theta,
+                    sad_topk=sad_topk,
+                    sad_attn_dim=sad_attn_dim,
+                    sad_use_rel_bias=sad_use_rel_bias,
+                    sad_gate=sad_gate,
+                )
             elif self.n_layer == 2:
-                self.cnn1 = MaskCNN_2(cnn_dim, cnn_dim, kernel_size=kernel_size, depth=cnn_depth,theta=theta)
-        self.down_fc = nn.Linear(cnn_dim*3, num_ner_tag)
-        torch.nn.init.xavier_normal_(self.down_fc.weight.data)
+                self.cnn1 = MaskCNN_2(
+                    cnn_dim,
+                    cnn_dim,
+                    kernel_size=kernel_size,
+                    depth=cnn_depth,
+                    theta=theta,
+                    sad_topk=sad_topk,
+                    sad_attn_dim=sad_attn_dim,
+                    sad_use_rel_bias=sad_use_rel_bias,
+                    sad_gate=sad_gate,
+                )
+        if self.head_type == 'residual_mlp':
+            self.score_head = ResidualMLPScoreHead(
+                in_features=cnn_dim * 3,
+                out_features=num_ner_tag,
+                dropout=logit_drop,
+                hidden_ratio=1.5,
+            )
+        else:
+            self.score_head = nn.Linear(cnn_dim * 3, num_ner_tag)
+            torch.nn.init.xavier_normal_(self.score_head.weight.data)
         self.logit_drop = logit_drop
     def forward(self, input_ids, bpe_len, indexes, matrix,raw_words):
 
@@ -98,7 +165,7 @@ class CNNNer(nn.Module):
             u_score1= self.cnn1(u_scores1, pad_mask1,self.training)
 
         u_score = torch.concat([scores, u_score1],dim=1)
-        final_score = self.down_fc(u_score.permute(0, 2, 3, 1))
+        final_score = self.score_head(u_score.permute(0, 2, 3, 1))
         assert final_score.size(-1) == matrix.size(-1)
         if self.training:
             flat_scores = final_score.reshape(-1)

@@ -1,75 +1,140 @@
-import numpy
+import math
 from torch import nn
 import torch
-import numpy as np
-import copy
-import math
 
 import torch.nn.functional as F
-from sparsemax import Sparsemax
-
-class Conv2d_selfAdapt(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1,
-                 padding=1, dilation=1, groups=1, bias=False, theta=0):
-        super(Conv2d_selfAdapt, self).__init__()
-        self.kernel_size = kernel_size
-        self.padding = padding
-        self.stride = stride
-        self.t = theta
-        self.mask_conv2d = nn.Conv2d(in_channels, 8, kernel_size=kernel_size, stride=stride, padding="same",
-                              dilation=dilation, groups=groups, bias=bias)
-        # self.filter_conv2d = nn.Conv2d(in_channels, 1, kernel_size=kernel_size, stride=stride, padding="same",
-        #                       dilation=dilation, groups=groups, bias=bias)
-        self.unfold = nn.Unfold(kernel_size=kernel_size,dilation=dilation,padding=1)
-        self.softArgMax = Soft_argmax(t=self.t)
-        self.layerNorm = LayerNorm((1, 8, 1, 1), dim_index=1)
-        self.diff_conv2d_weight = torch.tensor([[-1., -1.,-1. ],[ -1.,1.,-1. ],[-1.,-1.,-1.]],requires_grad=False)[None, None, :, :].repeat(in_channels, out_channels, 1, 1).cuda(0)
-        self.unfold_mask01_x = None
-    def forward(self, x ,init_flag): 
-        batch_size,hidden_size, h, w =x.shape
-        kernel_size = self.kernel_size
-        x_unfold = self.unfold(x).reshape(batch_size, hidden_size, kernel_size*kernel_size,h,w)
-        if init_flag:
-            mask_x = self.mask_conv2d(x)
-            mask_x = self.layerNorm(mask_x)
-            mask01_x = self.softArgMax(mask_x) # b kernel*kernel h w
-            self.unfold_mask01_x = mask01_x.unsqueeze(1).reshape(batch_size,1, 8,h,w)
-
-        x_unfold[:,:,[0,1,2,3,5,6,7,8],:,:] = x_unfold[:,:,[0,1,2,3,5,6,7,8],:,:] * self.unfold_mask01_x 
-        x_with_mask = x_unfold.reshape(batch_size,-1,h*w)
-        weight = self.diff_conv2d_weight.view(self.diff_conv2d_weight.size(0), -1).t()
-
-        #  out_channel * kernel * kernel , in_channel
-        out_unf = x_with_mask.transpose(1, 2).matmul(weight).transpose(1, 2) # bs,in_channel,h*w
-
-        output = F.fold(out_unf,(h,w),(1,1))
-        return output
 
 
-class Soft_argmax(nn.Module):
-    def __init__(self,t) -> None:
-        super(Soft_argmax,self).__init__()
-        self.t = t
-    def forward(self,x):
-        x_gumbel = gumbel_softmax_sample(x,self.t)
-        argmax = torch.zeros_like(x).cuda()
-        argmax = argmax.scatter_(1,torch.argmax(x_gumbel,1).unsqueeze(1),1)
-        c = argmax - x_gumbel
-        c = c.detach()
-        output = c + x_gumbel
-        return output
-        
-def sample_gumbel(shape, eps=1e-20):
-    U = torch.rand(shape)
-    U = U.cuda()
-    return -torch.log(-torch.log(U + eps) + eps)
+class LocalSparseAttnSAD(nn.Module):
+    """
+    Local sparse-attention SAD path ported from the user's local-sparse-attn branch.
+
+    This module builds local attention over the 8-neighbor window and outputs
+    center-minus-context features.
+    """
+
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        kernel_size=3,
+        stride=1,
+        padding=1,
+        dilation=1,
+        groups=1,
+        bias=False,
+        attn_dim=None,
+        topk=4,
+        use_rel_bias=True,
+        use_gate=True,
+    ):
+        super(LocalSparseAttnSAD, self).__init__()
+        if kernel_size != 3:
+            raise ValueError("LocalSparseAttnSAD only supports kernel_size=3.")
+        if groups != 1:
+            raise ValueError("LocalSparseAttnSAD only supports groups=1.")
+
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.attn_dim = in_channels if attn_dim is None else attn_dim
+        self.topk = topk
+        self.use_rel_bias = use_rel_bias
+        self.use_gate = use_gate
+
+        unfold_padding = 1 if padding == 'same' else padding
+        self.unfold = nn.Unfold(
+            kernel_size=kernel_size,
+            dilation=dilation,
+            padding=unfold_padding,
+            stride=stride,
+        )
+        self.q_proj = nn.Conv2d(in_channels, self.attn_dim, kernel_size=1, bias=False)
+        self.k_proj = nn.Conv2d(in_channels, self.attn_dim, kernel_size=1, bias=False)
+        self.v_proj = nn.Conv2d(in_channels, in_channels, kernel_size=1, bias=False)
+        self.gate_proj = nn.Conv2d(in_channels * 2, in_channels, kernel_size=1, bias=True)
+        self.out_proj = (
+            nn.Identity()
+            if out_channels == in_channels
+            else nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=bias)
+        )
+        self.attn_mix_logit = nn.Parameter(torch.tensor(0.0))
+
+        self.register_buffer('neighbor_index', torch.tensor([0, 1, 2, 3, 5, 6, 7, 8], dtype=torch.long))
+        if use_rel_bias:
+            self.rel_bias_scale = nn.Parameter(torch.tensor(0.1))
+            self.rel_bias_mlp = nn.Sequential(
+                nn.Conv2d(2, 16, kernel_size=1, bias=True),
+                nn.GELU(),
+                nn.Conv2d(16, 8, kernel_size=1, bias=True),
+            )
+        else:
+            self.register_parameter('rel_bias_scale', None)
+            self.rel_bias_mlp = None
+
+    @staticmethod
+    def _build_relation_feat(h, w, device, dtype):
+        row_idx = torch.arange(h, device=device, dtype=dtype).view(1, 1, h, 1)
+        col_idx = torch.arange(w, device=device, dtype=dtype).view(1, 1, 1, w)
+        span_len = col_idx - row_idx
+        max_span = float(max(h - 1, 1))
+        span_norm = span_len / max_span
+        near_diag = (span_len.abs() <= 1).to(dtype)
+        return torch.cat([span_norm, near_diag], dim=1)
+
+    def forward(self, x):
+        bsz, c, h, w = x.shape
+        kernel_size = 3
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
+
+        k_unfold = self.unfold(k).reshape(bsz, self.attn_dim, kernel_size * kernel_size, h, w)
+        v_unfold = self.unfold(v).reshape(bsz, c, kernel_size * kernel_size, h, w)
+
+        logits = (q.unsqueeze(2) * k_unfold).sum(dim=1) / math.sqrt(float(self.attn_dim))
+        logits = logits[:, self.neighbor_index, :, :]
+
+        valid_mask = x.new_ones((bsz, 1, h, w))
+        valid_neighbors = self.unfold(valid_mask).reshape(bsz, 1, 9, h, w)[:, :, self.neighbor_index, :, :]
+        valid_neighbors = valid_neighbors.squeeze(1) > 0.5
+        logits = logits.masked_fill(~valid_neighbors, -1e4)
+
+        if self.use_rel_bias:
+            rel_feat = self._build_relation_feat(h, w, x.device, logits.dtype)
+            rel_bias = self.rel_bias_mlp(rel_feat)
+            logits = logits + self.rel_bias_scale * rel_bias
+
+        k_top = min(max(1, int(self.topk)), logits.size(1))
+        sparse = soft_topk_mask(logits, topk=k_top, temperature=1.0)
+        dense = torch.softmax(logits, dim=1)
+        mix = torch.sigmoid(self.attn_mix_logit)
+        attn = mix * sparse + (1.0 - mix) * dense
+        attn = attn * valid_neighbors.to(attn.dtype)
+        attn = attn / attn.sum(dim=1, keepdim=True).clamp_min(1e-6)
+
+        center = v_unfold[:, :, 4, :, :]
+        value_nb = v_unfold[:, :, self.neighbor_index, :, :]
+        context = (value_nb * attn.unsqueeze(1)).sum(dim=2)
+        delta = center - context
+
+        if self.use_gate:
+            gate = torch.sigmoid(self.gate_proj(torch.cat([center, context], dim=1)))
+            delta = gate * delta
+        return self.out_proj(delta)
 
 
-def gumbel_softmax_sample(logits, temperature=1):
-    y = logits + sample_gumbel(logits.size())
-    return F.softmax(y / temperature, dim=1)
+def soft_topk_mask(logits, topk=2, temperature=1.0):
+    temperature = max(float(temperature), 1e-6)
+    scaled = logits / temperature
+    if topk is None or topk <= 0 or topk >= scaled.size(1):
+        return F.softmax(scaled, dim=1)
+    topk_values, topk_indices = torch.topk(scaled, k=topk, dim=1)
+    topk_probs = F.softmax(topk_values, dim=1)
+    output = torch.zeros_like(scaled)
+    output.scatter_(1, topk_indices, topk_probs)
+    return output
 
-    
+
 class LayerNorm(nn.Module):
     def __init__(self, shape=(1, 7, 1, 1), dim_index=1):
         super(LayerNorm, self).__init__()

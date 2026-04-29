@@ -23,6 +23,44 @@ tqdm==4.65.0
 transformers==4.20.1
 ```
 
+## Deployment Without Direct HuggingFace Access
+
+For network-restricted environments (cannot access HuggingFace directly), use local backbone download + local path training.
+
+1. Create environment and install deps:
+   ```bash
+   conda create -n difinet python=3.10 -y
+   conda activate difinet
+   pip install --no-cache-dir torch==2.3.0 --index-url https://download.pytorch.org/whl/cu121
+   pip install --no-cache-dir torch-scatter -f https://data.pyg.org/whl/torch-2.3.0+cu121.html
+   pip install --no-cache-dir -r requirements
+   ```
+
+2. Download GENIA backbone model to `pretrained_models/`:
+   ```bash
+   python scripts/download_backbones.py \
+     --source wisemodel \
+     --groups genia \
+     --wisemodel-endpoint https://hf-mirror.com
+   ```
+
+   If HF-compatible mirror is unavailable, you can fallback to ModelScope:
+   ```bash
+   python scripts/download_backbones.py --source modelscope --groups genia
+   ```
+
+3. Put GENIA preprocessed files in:
+   ```text
+   preprocess/outputs/genia/
+   ```
+
+4. Run training:
+   ```bash
+   bash train_arg_genia.sh
+   ```
+
+`train.py` will automatically prioritize local models under `pretrained_models/` for each dataset.
+
 ## Preprocess your datasets
 Put ACE datasets in the `preprocess/data` directory, following a similar structure as demonstrated in [CNN_Nested_NER](https://github.com/yhcc/CNN_Nested_NER) 
 
