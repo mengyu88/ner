@@ -66,12 +66,19 @@ parser.add_argument('--bfm_type', default='legacy',
 parser.add_argument('--sdm_mask_type', default='hard_gumbel',
                     choices=['hard_gumbel', 'soft_topk', 'soft_topk_mix', 'softmax'], type=str)
 parser.add_argument('--sdm_topk', default=2, type=int)
+parser.add_argument('--num_train_batch_per_epoch', default=-1, type=int)
+parser.add_argument('--num_eval_batch_per_dl', default=-1, type=int)
+parser.add_argument('--num_eval_sanity_batch', default=1, type=int)
+parser.add_argument('--evaluate_every', default=-1, type=int)
+parser.add_argument('--num_workers', default=2, type=int)
+parser.add_argument('--checkpoint_monitor', default='f#f#test', type=str)
+parser.add_argument('--fp16', action='store_true')
 
 
 def default_model_name(dataset_name):
     if 'genia' in dataset_name:
         return 'dmis-lab/biobert-v1.1'
-    if dataset_name == 'weibo':
+    if dataset_name in ('weibo', 'food'):
         return 'bert-base-chinese'
     if dataset_name == 'conll03':
         return 'bert-large-cased'
@@ -158,6 +165,8 @@ def get_data(dataset_name, model_name):
         paths = 'preprocess/outputs/genia'
     elif dataset_name == 'weibo':
         paths = 'preprocess/outputs/weibo'
+    elif dataset_name == 'food':
+        paths = 'preprocess/outputs/food'
     elif dataset_name == 'conll03':
         paths = 'preprocess/outputs/conll03'
     else:
@@ -188,14 +197,14 @@ for name, ds in dl.iter_datasets():
                                                     batch_size=args.batch_size))
 
     if name == 'train':
-        _dl = prepare_torch_dataloader(ds, batch_size=args.batch_size, num_workers=2,
+        _dl = prepare_torch_dataloader(ds, batch_size=args.batch_size, num_workers=args.num_workers,
                                        batch_sampler=BucketedBatchSampler(ds, 'input_ids',
                                                                           batch_size=args.batch_size,
                                                                           num_batch_per_bucket=30),
                                        pin_memory=True, shuffle=True)
 
     else:
-        _dl = prepare_torch_dataloader(ds, batch_size=args.batch_size, num_workers=2,
+        _dl = prepare_torch_dataloader(ds, batch_size=args.batch_size, num_workers=args.num_workers,
                                        sampler=SortedSampler(ds, 'input_ids'), pin_memory=True, shuffle=False)
     dls[name] = _dl
 
@@ -251,7 +260,7 @@ optimizer = torch.optim.AdamW([{'params': non_ln_params, 'lr': args.lr, 'weight_
 # callbacks
 callbacks = []
 callbacks.append(FitlogCallback(log_loss_every=20))
-callbacks.append(CheckpointCallback(monitor='f#f#test',save_evaluate_results=True, folder='_saved_models', topk=3))
+callbacks.append(CheckpointCallback(monitor=args.checkpoint_monitor,save_evaluate_results=True, folder='_saved_models', topk=3))
 callbacks.append(TorchGradClipCallback(clip_value=5))
 callbacks.append(TorchWarmupCallback(warmup=args.warmup, schedule=schedule))
 train_dls = {}
@@ -275,11 +284,15 @@ trainer = Trainer(model=model,
                   n_epochs=args.n_epochs,
                   metrics=metrics,
                   monitor='f#f#dev',
-                  evaluate_every=-1,
+                  evaluate_every=args.evaluate_every,
                   evaluate_use_dist_sampler=True,
                   accumulation_steps=args.accumulation_steps,
-                  fp16=False,
+                  fp16=args.fp16,
                   progress_bar='rich')
 
-trainer.run(num_train_batch_per_epoch=-1, num_eval_batch_per_dl=-1, num_eval_sanity_batch=1)
+trainer.run(
+    num_train_batch_per_epoch=args.num_train_batch_per_epoch,
+    num_eval_batch_per_dl=args.num_eval_batch_per_dl,
+    num_eval_sanity_batch=args.num_eval_sanity_batch,
+)
 fitlog.finish()

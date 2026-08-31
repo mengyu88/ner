@@ -1,0 +1,31 @@
+[22:04:33] INFO     Read cache from /root/ner-2026-04/cache cache_results.py:320
+                    s/9fc3571c_ner_caches.pkl (Saved on                         
+                    2026-07-02 21:56:04.482941).                                
+           INFO     In total 3 datasets:                            train.py:190
+                            dev has 553 instances.                              
+                            test has 511 instances.                             
+                            train has 12003 instances.                          
+                                                                                
+           INFO     8 labels: {'FC': 0, 'FN': 1, 'IN': 2, 'IV': 3,  train.py:192
+                    'ORG': 4, 'PER': 5, 'SN': 6, 'SNum': 7},                    
+                    matrix_segs:{'ent': 8}                                      
+Some weights of the model checkpoint at /root/.cache/modelscope/hub/models/AI-ModelScope/bert-base-chinese were not used when initializing BertModel: ['cls.predictions.bias', 'cls.seq_relationship.bias', 'cls.predictions.decoder.weight', 'cls.predictions.transform.dense.weight', 'cls.predictions.transform.LayerNorm.bias', 'cls.predictions.transform.LayerNorm.weight', 'cls.seq_relationship.weight', 'cls.predictions.transform.dense.bias']
+- This IS expected if you are initializing BertModel from the checkpoint of a model trained on another task or with another architecture (e.g. initializing a BertForSequenceClassification model from a BertForPreTraining model).
+- This IS NOT expected if you are initializing BertModel from the checkpoint of a model that you expect to be exactly identical (initializing a BertForSequenceClassification model from a BertForSequenceClassification model).
+[22:04:35] INFO     Counter({'pretrain_model': 102267648, 'cnn1':   train.py:236
+                    883954, 'biaffine': 300000, 'score_head':                   
+                    202877, 'head_mlp': 153800, 'tail_mlp': 153800,             
+                    'W': 48240, 'size_bias_embedding': 3600,                    
+                    'pool_mix_logit': 1, 'size_bias_scale': 1})                 
+           INFO     Total param  104013921                          train.py:237
+           INFO     The checkpoint will be saved in this folder topk_saver.py:54
+                    for this time:                                              
+                    _saved_models/2026-07-02-22_04_30_902468.                   
+[22:04:42] INFO     The best performance for monitor     progress_callback.py:37
+                    f#f#dev:0.05 was achieved in                                
+                    Epoch:1, Global Batch:1. The                                
+                    evaluation result:                                          
+                    {'f#f#dev': 0.05, 'rec#f#dev': 2.44,                        
+                    'pre#f#dev': 0.03, 'f#f#test': 0.0,                         
+                    'rec#f#test': 0.0, 'pre#f#test':                            
+                    0.0}                                                        

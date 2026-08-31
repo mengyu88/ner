@@ -1,0 +1,10 @@
+/root/.conda/envs/difinet/bin/python train.py \
+  -n 5 -d food \
+  --model_name /root/.cache/modelscope/hub/models/AI-ModelScope/bert-base-chinese \
+  --lr 2e-5 --cnn_dim 120 -b 2 --accumulation_steps 8 \
+  --cnn_depth 1 --n_head 4 --logit_drop 0.1 --seed 42 --n_layer 1 \
+  --size_feature_type bias --word_pooling mix --pool_gate_type scalar \
+  --refiner_type maskcnn --span_encoder_type none \
+  --pair_scorer biaffine --mlp_type mlp --fusion_type sum \
+  --head_type residual_mlp \
+  --bfm_type pyramid_gated --sdm_mask_type soft_topk_mix --sdm_topk 2
